@@ -1,0 +1,23 @@
+node_modules/
+coverage/
+.DS_Store
+.env
+.env.*
+!.env.example
+
+# Local credentials and diagnostics
+config.real.json
+capture.json
+debug-*
+*.log
+*.pid
+
+# Local packages and acceptance artifacts
+*.tgz
+*.png
+*.jpg
+*.jpeg
+*.webp
+screenshot.ps1
+scripts/desktop-image-smoke.mjs
+

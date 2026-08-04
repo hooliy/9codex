@@ -1,0 +1,36 @@
+{
+  "name": "9codex",
+  "version": "1.0.0",
+  "description": "OpenAI-compatible local model gateway for Codex Desktop",
+  "author": "hooliy1",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/hooliy/9codex.git"
+  },
+  "bugs": {
+    "url": "https://github.com/hooliy/9codex/issues"
+  },
+  "homepage": "https://github.com/hooliy/9codex#readme",
+  "keywords": [
+    "codex",
+    "codex-desktop",
+    "openai-compatible",
+    "model-gateway"
+  ],
+  "type": "module",
+  "bin": {
+    "9codex": "bin/9codex.mjs"
+  },
+  "files": [
+    "bin",
+    "lib",
+    "README.md"
+  ],
+  "scripts": {
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=24"
+  }
+}
