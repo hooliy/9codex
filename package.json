@@ -1,5 +1,5 @@
 {
-  "name": "9codex",
+  "name": "@hooliy/9codex",
   "version": "1.0.0",
   "description": "OpenAI-compatible local model gateway for Codex Desktop",
   "author": "hooliy1",

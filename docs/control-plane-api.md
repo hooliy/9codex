@@ -119,7 +119,7 @@ The client sends `If-None-Match: "<current revision>"`; return HTTP 304 when unc
     "channel": "stable",
     "latest_version": "3.0.1",
     "minimum_version": "3.0.0",
-    "npm_package": "9codex",
+    "npm_package": "@hooliy/9codex",
     "npm_registry": "https://registry.npmjs.org"
   },
   "commands": {

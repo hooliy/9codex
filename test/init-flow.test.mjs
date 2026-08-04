@@ -43,7 +43,7 @@ test("opens the login page, exchanges the callback, and saves the authorized boo
           image_model: "image-init",
         },
         models: [],
-        updates: { channel: "stable", npm_package: "9codex", npm_registry: "https://registry.npmjs.org" },
+        updates: { channel: "stable", npm_package: "@hooliy/9codex", npm_registry: "https://registry.npmjs.org" },
         commands: { events_url: "/v1/agent/events", heartbeat_interval_seconds: 60 },
       }));
     }

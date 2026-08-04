@@ -12,13 +12,13 @@ const policy = {
 test("accepts only the fixed 9codex package, exact semver, channel, and registry", () => {
   assert.deepEqual(
     validateUpdateRequest({
-      package: "9codex",
+      package: "@hooliy/9codex",
       version: "3.0.1",
       channel: "stable",
       registry: "https://registry.npmjs.org",
     }, policy),
     {
-      package: "9codex",
+      package: "@hooliy/9codex",
       version: "3.0.1",
       channel: "stable",
       registry: "https://registry.npmjs.org",
@@ -26,10 +26,10 @@ test("accepts only the fixed 9codex package, exact semver, channel, and registry
   );
   for (const request of [
     { package: "evil", version: "3.0.1", channel: "stable", registry: policy.npm_registry },
-    { package: "9codex", version: "latest", channel: "stable", registry: policy.npm_registry },
-    { package: "9codex", version: "3.0.1", channel: "dev", registry: policy.npm_registry },
-    { package: "9codex", version: "3.0.1", channel: "stable", registry: "https://evil.example" },
-    { package: "9codex", version: "3.0.1", channel: "stable", registry: policy.npm_registry, command: "whoami" },
+    { package: "@hooliy/9codex", version: "latest", channel: "stable", registry: policy.npm_registry },
+    { package: "@hooliy/9codex", version: "3.0.1", channel: "dev", registry: policy.npm_registry },
+    { package: "@hooliy/9codex", version: "3.0.1", channel: "stable", registry: "https://evil.example" },
+    { package: "@hooliy/9codex", version: "3.0.1", channel: "stable", registry: policy.npm_registry, command: "whoami" },
   ]) {
     assert.throws(
       () => validateUpdateRequest(request, policy),
@@ -42,7 +42,7 @@ test("rolls back to the prior package version when the new service fails health 
   const calls = [];
   await assert.rejects(
     () => runStagedUpdate({
-      package: "9codex",
+      package: "@hooliy/9codex",
       version: "3.0.1",
       channel: "stable",
       registry: "https://registry.npmjs.org",
@@ -57,10 +57,10 @@ test("rolls back to the prior package version when the new service fails health 
   );
 
   assert.deepEqual(calls, [
-    "install:9codex@3.0.1:https://registry.npmjs.org",
+    "install:@hooliy/9codex@3.0.1:https://registry.npmjs.org",
     "restart",
     "health",
-    "install:9codex@3.0.0:https://registry.npmjs.org",
+    "install:@hooliy/9codex@3.0.0:https://registry.npmjs.org",
     "restart",
   ]);
 });

@@ -264,7 +264,7 @@ try {
       const target = args[0] || config.updates.target_version;
       if (!target) throw new Error("No target version is configured");
       const result = await runStagedUpdate({
-        package: "9codex",
+        package: "@hooliy/9codex",
         version: target,
         channel: config.updates.channel,
         registry: config.updates.npm_registry,

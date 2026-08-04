@@ -16,7 +16,7 @@ Codex application bundle, native model cache, or unrelated Codex settings.
 ## Install
 
 ```bash
-npm install --global 9codex
+npm install --global @hooliy/9codex
 9codex init
 ```
 

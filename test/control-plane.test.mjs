@@ -137,7 +137,7 @@ test("refreshes an access token, retries bootstrap, and atomically applies a val
         channel: "stable",
         latest_version: "3.0.1",
         minimum_version: "3.0.0",
-        npm_package: "9codex",
+        npm_package: "@hooliy/9codex",
         npm_registry: "https://registry.npmjs.org",
       },
       commands: { events_url: "/v1/agent/events", heartbeat_interval_seconds: 60 },
