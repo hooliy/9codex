@@ -138,6 +138,40 @@ test("gateway repairs a stale provider-prefixed model even when the stale model 
   assert.equal(upstreamModel, "raw/model");
 });
 
+test("gateway replaces unavailable historical model ids with the configured default", async (t) => {
+  const upstreamModels = [];
+  const upstream = http.createServer(async (req, res) => {
+    const chunks = [];
+    for await (const chunk of req) chunks.push(chunk);
+    const model = JSON.parse(Buffer.concat(chunks).toString("utf8")).model;
+    upstreamModels.push(model);
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify({ id: "resp_test", object: "response", output: [] }));
+  });
+  const upstreamUrl = await listen(upstream);
+  t.after(() => new Promise((resolve) => upstream.close(resolve)));
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "9codex-gateway-test-"));
+  const paths = resolvePaths(home);
+  routingFixture(paths);
+  const gateway = createGateway(gatewayConfig(upstreamUrl), paths);
+  const gatewayUrl = await listen(gateway);
+  t.after(() => new Promise((resolve) => gateway.close(resolve)));
+
+  for (const model of ["gpt-5.5", "openai/gpt-5.5", "9codex/gpt-5.5", "cx/gpt-5.5"]) {
+    const response = await fetch(`${gatewayUrl}/v1/responses`, {
+      method: "POST",
+      headers: {
+        authorization: "Bearer 9codex_local_test",
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ model, input: "continue old task", stream: false }),
+    });
+    assert.equal(response.status, 200);
+  }
+
+  assert.deepEqual(upstreamModels, ["raw/model", "raw/model", "raw/model", "raw/model"]);
+});
+
 test("rejects requests without the configured local bearer token", async (t) => {
   const upstream = http.createServer((req, res) => res.end());
   const upstreamUrl = await listen(upstream);
