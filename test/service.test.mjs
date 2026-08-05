@@ -7,7 +7,7 @@ import test from "node:test";
 import { installService, restartService, uninstallService } from "../lib/service.mjs";
 import { resolvePaths } from "../lib/paths.mjs";
 
-test("Windows install registers an invisible supervised daemon instead of a visible cmd window", async () => {
+test("Windows install registers a supervised native GUI launcher without a console host", async () => {
   const paths = resolvePaths(fs.mkdtempSync(path.join(os.tmpdir(), "9codex-service-test-")));
   const calls = [];
 
@@ -22,21 +22,54 @@ test("Windows install registers an invisible supervised daemon instead of a visi
   });
 
   assert.ok(calls.length >= 1);
+  const compileCall = calls.find(([, args]) => /OutputType WindowsApplication/.test(args.at(-1)));
+  assert.ok(compileCall, "expected native GUI launcher compilation");
+  assert.match(compileCall[1].at(-1), /CreateNoWindow = true/);
+  assert.match(compileCall[1].at(-1), /WaitForExit/);
+  assert.match(compileCall[1].at(-1), /9codex-service-launcher\.exe/);
+
   const registrationCall = calls.find(([, args]) => /Register-ScheduledTask/.test(args.at(-1)));
   assert.ok(registrationCall, "expected a task registration call");
   const registration = registrationCall[1].at(-1);
-  // schtasks runs node.exe directly - no powershell wrapper, no while loop, no conhost window
+  assert.match(registration, /9codex-service-launcher\.exe/);
+  assert.match(registration, /9codex\.mjs/);
+  assert.match(registration, /--redirect-logs/);
   assert.match(registration, /RestartCount 999/);
   assert.match(registration, /RestartInterval/);
   assert.match(registration, /RepetitionInterval/);
   assert.match(registration, /LogonType Interactive/);
-  assert.match(registration, /9codex\.mjs/);
-  assert.match(registration, /--redirect-logs/);
   assert.doesNotMatch(registration, /while \(\$true\)/);
   assert.doesNotMatch(registration, /powershell\.exe/);
+  assert.doesNotMatch(registration, /wscript\.exe/);
+  assert.doesNotMatch(registration, /cmd\.exe/);
   assert.doesNotMatch(registration, /-WindowStyle/);
   assert.equal(registration.includes("service.cmd"), false);
   assert.equal(fs.existsSync(paths.serviceScript), false);
+});
+
+test("Windows install removes scoped stale daemons before registering the new runtime", async () => {
+  const paths = resolvePaths(fs.mkdtempSync(path.join(os.tmpdir(), "9codex-service-test-")));
+  const calls = [];
+
+  await installService(paths, {
+    platform: "win32",
+    nodePath: "C:\\Program Files\\nodejs\\node.exe",
+    cliPath: "C:\\Users\\Test\\AppData\\Roaming\\npm\\node_modules\\@hooliy\\9codex\\bin\\9codex.mjs",
+    run: async (file, args) => {
+      calls.push([file, args]);
+      return 0;
+    },
+  });
+
+  const cleanup = calls.find(([file, args]) =>
+    file === "powershell.exe"
+    && /Get-CimInstance/.test(args.at(-1))
+    && /Stop-Process/.test(args.at(-1)),
+  );
+  assert.ok(cleanup);
+  assert.match(cleanup[1].at(-1), /9codex\\\.mjs/);
+  assert.match(cleanup[1].at(-1), /daemon/);
+  assert.ok(calls.indexOf(cleanup) < calls.findIndex(([, args]) => /Register-ScheduledTask/.test(args.at(-1))));
 });
 
 test("macOS install retries launchd bootstrap while the previous agent is still unloading", async () => {

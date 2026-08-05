@@ -7,6 +7,8 @@ import { fileURLToPath } from "node:url";
 import { buildCatalog, writeCatalog } from "../lib/catalog.mjs";
 import {
   injectCodexConfig,
+  migrateCodexHistoryProviders,
+  repairCodexHistoryProviders,
   restoreCodexConfig,
   restoreCodexHistoryProviders,
 } from "../lib/codex-config.mjs";
@@ -160,14 +162,30 @@ async function health(config, timeoutMs = 3000) {
   }
 }
 
-async function waitForHealth(config, timeoutMs = 20_000) {
+async function waitForHealth(config, timeoutMs = 20_000, expectedVersion = null) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     const result = await health(config, 1000);
-    if (result?.ok && result?.service === "9codex") return result;
+    if (
+      result?.ok
+      && result?.service === "9codex"
+      && (!expectedVersion || result.version === expectedVersion)
+    ) return result;
     await new Promise((resolve) => setTimeout(resolve, 250));
   }
   return null;
+}
+
+async function repairCodex(config) {
+  injectCodexConfig(paths, config, { nodePath: process.execPath, cliPath });
+  return repairCodexHistoryProviders(paths);
+}
+
+async function restartCodexWithRepair(config) {
+  return restartCodex({
+    sessionFile: paths.desktopSession,
+    beforeOpen: () => repairCodex(config),
+  });
 }
 
 async function install(config, { refresh = true } = {}) {
@@ -175,15 +193,19 @@ async function install(config, { refresh = true } = {}) {
     throw new Error("尚未配置中转。请先运行 `9codex init`");
   }
   if (refresh) await refreshCatalog(config);
-  injectCodexConfig(paths, config, { nodePath: process.execPath, cliPath });
+  migrateCodexHistoryProviders(paths);
   await installService(paths, { cliPath, nodePath: process.execPath });
   await restartService(paths);
-  const ready = await waitForHealth(config);
+  const ready = await waitForHealth(config, 20_000, packageInfo.version);
   if (!ready) throw new Error("9codex service did not become healthy");
+  let codex;
   try {
-    await restartCodex({ sessionFile: paths.desktopSession });
-  } catch {}
-  return ready;
+    codex = await restartCodexWithRepair(config);
+  } catch (error) {
+    await repairCodex(config);
+    codex = { codex_restarted: false, error: error.message };
+  }
+  return { health: ready, codex };
 }
 
 const [command = "status", ...args] = process.argv.slice(2);
@@ -192,19 +214,20 @@ try {
   switch (command) {
     case "init": {
       let config = ensureConfig();
+      migrateCodexHistoryProviders(paths);
       const controlPlaneUrl = args[0] || process.env.NINECODEX_API_URL || config.control_plane.base_url;
       if (controlPlaneUrl) {
         config = await runInitFlow(paths, controlPlaneUrl, { version: packageInfo.version });
       } else {
         config = await runLocalInit(config);
       }
-      const ready = await install(config, { refresh: false });
-      console.log(JSON.stringify({ initialized: true, authorized: Boolean(controlPlaneUrl), health: ready }, null, 2));
+      const result = await install(config, { refresh: false });
+      console.log(JSON.stringify({ initialized: true, authorized: Boolean(controlPlaneUrl), ...result }, null, 2));
       break;
     }
     case "install": {
-      const ready = await install(ensureConfig());
-      console.log(JSON.stringify({ installed: true, health: ready }, null, 2));
+      const result = await install(ensureConfig());
+      console.log(JSON.stringify({ installed: true, ...result }, null, 2));
       break;
     }
     case "sync": {
@@ -231,12 +254,13 @@ try {
       break;
     case "codex-restart": {
       const cfg = loadConfig(paths);
-      if (!(await health(cfg))) {
-        await restartService(paths);
-        const ready = await waitForHealth(cfg);
-        if (!ready) throw new Error("9codex daemon is not healthy; run `9codex init` or `9codex install` first");
+      const current = await health(cfg);
+      if (!current?.ok || current.version !== packageInfo.version) {
+        const result = await install(cfg, { refresh: false });
+        console.log(JSON.stringify({ ...result.codex, service_self_healed: true }, null, 2));
+        break;
       }
-      console.log(JSON.stringify(await restartCodex({ sessionFile: paths.desktopSession }), null, 2));
+      console.log(JSON.stringify(await restartCodexWithRepair(cfg), null, 2));
       break;
     }
     case "auth-token":

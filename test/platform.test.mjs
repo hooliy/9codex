@@ -8,6 +8,7 @@ import { restartCodex } from "../lib/platform.mjs";
 
 test("Windows restart targets only packaged Codex and waits for a new process", async () => {
   const calls = [];
+  const lifecycle = [];
   const sessionFile = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "9codex-ui-session-")), "desktop-session.json");
   let listed = 0;
   const result = await restartCodex({
@@ -17,8 +18,10 @@ test("Windows restart targets only packaged Codex and waits for a new process", 
     enableModelPicker: async ({ port }) => ({ connected: true, port }),
     run: async (file, args) => {
       calls.push({ file, args });
+      lifecycle.push(file);
       return { status: 0, stdout: "" };
     },
+    beforeOpen: async () => { lifecycle.push("repair"); },
     listProcesses: async () => {
       listed += 1;
       return listed === 1 ? [{ pid: 101, name: "ChatGPT.exe" }] : [{ pid: 202, name: "ChatGPT.exe" }];
@@ -41,11 +44,32 @@ test("Windows restart targets only packaged Codex and waits for a new process", 
   assert.doesNotMatch(calls[2].args.at(-1), /Get-ChildItem/);
   assert.match(calls[2].args.at(-1), /--remote-debugging-address=127\.0\.0\.1/);
   assert.match(calls[2].args.at(-1), /--remote-debugging-port=53111/);
+  assert.ok(lifecycle.indexOf("repair") > lifecycle.lastIndexOf("taskkill.exe"));
+  assert.ok(lifecycle.indexOf("repair") < lifecycle.indexOf("powershell.exe"));
   assert.equal(result.codex_restarted, true);
   assert.deepEqual(result.previous_pids, [101]);
   assert.deepEqual(result.current_pids, [202]);
   assert.equal(JSON.stringify(calls).includes("cmd.exe"), false);
   assert.equal(JSON.parse(fs.readFileSync(sessionFile, "utf8")).debug_port, 53111);
+});
+
+test("Codex restart succeeds when model picker connection is temporarily unavailable", async () => {
+  let listed = 0;
+  const result = await restartCodex({
+    platform: "win32",
+    debugPort: 53117,
+    enableModelPicker: async () => { throw new TypeError("fetch failed"); },
+    run: async () => ({ status: 0, stdout: "" }),
+    listProcesses: async () => (++listed === 1 ? [{ pid: 301 }] : [{ pid: 302 }]),
+    wait: async () => {},
+  });
+
+  assert.equal(result.codex_restarted, true);
+  assert.deepEqual(result.model_picker, {
+    connected: false,
+    verified: false,
+    error: "fetch failed",
+  });
 });
 
 test("macOS restart quits and reopens the official app", async () => {

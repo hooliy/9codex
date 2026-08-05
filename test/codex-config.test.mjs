@@ -8,6 +8,7 @@ import test from "node:test";
 import {
   injectCodexConfig,
   migrateCodexHistoryProviders,
+  repairCodexHistoryProviders,
   restoreCodexConfig,
   restoreCodexHistoryProviders,
 } from "../lib/codex-config.mjs";
@@ -110,7 +111,7 @@ test("history compatibility maps legacy providers in the Codex index without cha
     .map((row) => ({ ...row }));
   migrated.close();
 
-  assert.deepEqual(result, { databases: 1, migrated: 2, files: 0 });
+  assert.deepEqual(result, { databases: 1, migrated: 2, files: 0, busy: 0 });
   assert.deepEqual(providers, [
     { id: "current-9codex", model_provider: "9codex" },
     { id: "old-bridge", model_provider: "9codex" },
@@ -190,9 +191,38 @@ test("history compatibility still migrates rollout metadata while Codex holds it
   const result = migrateCodexHistoryProviders(paths);
 
   assert.equal(result.files, 1);
+  assert.equal(result.busy, 1);
   assert.equal(JSON.parse(fs.readFileSync(rollout, "utf8").split("\n", 1)[0]).payload.model_provider, "9codex");
   database.exec("ROLLBACK");
   database.close();
+});
+
+test("history repair retries after Codex releases its SQLite writer lock", async () => {
+  const { paths } = fixture();
+  const database = new DatabaseSync(paths.codexStateDb);
+  database.exec("CREATE TABLE threads (id TEXT PRIMARY KEY, model_provider TEXT NOT NULL)");
+  database.prepare("INSERT INTO threads (id, model_provider) VALUES (?, ?)").run("locked-spanai", "spanai");
+  database.exec("BEGIN EXCLUSIVE");
+  let waits = 0;
+
+  const result = await repairCodexHistoryProviders(paths, {
+    attempts: 2,
+    wait: async () => {
+      waits += 1;
+      database.exec("ROLLBACK");
+      database.close();
+    },
+  });
+
+  assert.equal(waits, 1);
+  assert.equal(result.busy, 0);
+  assert.equal(result.migrated, 1);
+  const migrated = new DatabaseSync(paths.codexStateDb, { readOnly: true });
+  assert.equal(
+    migrated.prepare("SELECT model_provider FROM threads WHERE id = ?").get("locked-spanai").model_provider,
+    "9codex",
+  );
+  migrated.close();
 });
 
 test("history restoration restores rollout metadata even while Codex holds its SQLite writer lock", () => {
