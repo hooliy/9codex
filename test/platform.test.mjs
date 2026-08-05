@@ -4,7 +4,22 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { restartCodex } from "../lib/platform.mjs";
+import { listCodexProcesses, restartCodex } from "../lib/platform.mjs";
+
+test("Windows process discovery parses tasklist CSV process ids", async () => {
+  const processes = await listCodexProcesses("win32", async (_file, args) => ({
+    status: 0,
+    stdout: args.some((arg) => arg.includes("ChatGPT.exe"))
+      ? '"ChatGPT.exe","54372","Console","1","182,000 K"\r\n'
+      : '"codex.exe","56240","Console","1","58,000 K"\r\n',
+    stderr: "",
+  }));
+
+  assert.deepEqual(processes, [
+    { pid: 54372, name: "ChatGPT.exe" },
+    { pid: 56240, name: "codex.exe" },
+  ]);
+});
 
 test("Windows restart targets only packaged Codex and waits for a new process", async () => {
   const calls = [];
