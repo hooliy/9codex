@@ -104,7 +104,7 @@ test("native Responses routing preserves unknown JSON while replacing model and 
   assert.match(await response.text(), /response\.completed/);
 });
 
-test("gateway repairs a stale provider-prefixed model before forwarding the request", async (t) => {
+test("gateway repairs a stale provider-prefixed model even when the stale model remains in the catalog", async (t) => {
   let upstreamModel;
   const upstream = http.createServer(async (req, res) => {
     const chunks = [];
@@ -118,6 +118,9 @@ test("gateway repairs a stale provider-prefixed model before forwarding the requ
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "9codex-gateway-test-"));
   const paths = resolvePaths(home);
   routingFixture(paths);
+  const routing = JSON.parse(fs.readFileSync(paths.modelMap, "utf8"));
+  routing.upstream_protocols["openai/raw-model"] = routing.upstream_protocols["raw/model"];
+  fs.writeFileSync(paths.modelMap, JSON.stringify(routing));
   const gateway = createGateway(gatewayConfig(upstreamUrl), paths);
   const gatewayUrl = await listen(gateway);
   t.after(() => new Promise((resolve) => gateway.close(resolve)));
