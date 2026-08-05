@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   UpdateError,
+  npmSpawnOptions,
   resolveLatestVersion,
   runStagedUpdate,
   validateUpdateRequest,
@@ -13,6 +14,19 @@ const policy = {
   channel: "stable",
   npm_registry: "https://registry.npmjs.org",
 };
+
+test("Windows npm updates run cmd shims through a hidden shell", () => {
+  assert.deepEqual(npmSpawnOptions("win32"), {
+    stdio: "inherit",
+    windowsHide: true,
+    shell: true,
+  });
+  assert.deepEqual(npmSpawnOptions("linux"), {
+    stdio: "inherit",
+    windowsHide: true,
+    shell: false,
+  });
+});
 
 test("accepts only the fixed 9codex package, exact semver, channel, and registry", () => {
   assert.deepEqual(
