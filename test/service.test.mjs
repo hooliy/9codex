@@ -22,16 +22,19 @@ test("Windows install registers an invisible supervised daemon instead of a visi
   });
 
   assert.ok(calls.length >= 1);
-  const registrationCall = calls.find(([, args]) => /-WindowStyle Hidden/.test(args.at(-1)));
+  const registrationCall = calls.find(([, args]) => /Register-ScheduledTask/.test(args.at(-1)));
   assert.ok(registrationCall, "expected a task registration call");
   const registration = registrationCall[1].at(-1);
-  assert.match(registration, /-WindowStyle Hidden/);
+  // schtasks runs node.exe directly - no powershell wrapper, no while loop, no conhost window
   assert.match(registration, /RestartCount 999/);
   assert.match(registration, /RestartInterval/);
-  assert.match(registration, /while \(\$true\)/);
   assert.match(registration, /RepetitionInterval/);
   assert.match(registration, /LogonType Interactive/);
   assert.match(registration, /9codex\.mjs/);
+  assert.match(registration, /--redirect-logs/);
+  assert.doesNotMatch(registration, /while \(\$true\)/);
+  assert.doesNotMatch(registration, /powershell\.exe/);
+  assert.doesNotMatch(registration, /-WindowStyle/);
   assert.equal(registration.includes("service.cmd"), false);
   assert.equal(fs.existsSync(paths.serviceScript), false);
 });

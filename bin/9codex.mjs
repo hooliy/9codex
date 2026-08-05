@@ -180,6 +180,9 @@ async function install(config, { refresh = true } = {}) {
   await restartService(paths);
   const ready = await waitForHealth(config);
   if (!ready) throw new Error("9codex service did not become healthy");
+  try {
+    await restartCodex({ sessionFile: paths.desktopSession });
+  } catch {}
   return ready;
 }
 
