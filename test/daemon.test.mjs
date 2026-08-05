@@ -5,6 +5,7 @@ import path from "node:path";
 import test from "node:test";
 
 import {
+  desktopMaintenanceActive,
   dispatchRemoteCommand,
   maintainCodexModelPicker,
   parseSseCommands,
@@ -103,6 +104,28 @@ test("desktop watcher restores the 9codex renderer integration after a normal Co
   assert.equal(restarts, 1);
   assert.equal(result, "restarted");
   assert.deepEqual(state, { port: 53113, failures: 0, restarting: false });
+});
+
+test("desktop watcher does not race an installer-owned Codex restart", async () => {
+  const state = { port: null, failures: 2, restarting: false };
+  let listed = 0;
+  const result = await maintainCodexModelPicker(state, {
+    maintenanceActive: async () => true,
+    listProcesses: async () => { listed += 1; return []; },
+  });
+
+  assert.equal(result, "busy");
+  assert.equal(listed, 0);
+  assert.deepEqual(state, { port: null, failures: 2, restarting: false });
+});
+
+test("expired desktop maintenance markers are removed", () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "9codex-daemon-test-"));
+  const marker = path.join(home, "desktop-maintenance.json");
+  fs.writeFileSync(marker, JSON.stringify({ expires_at: 100 }));
+
+  assert.equal(desktopMaintenanceActive(marker, 101), false);
+  assert.equal(fs.existsSync(marker), false);
 });
 
 test("desktop watcher immediately replaces a normal launch whose processes differ from the saved debug session", async () => {

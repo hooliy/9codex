@@ -104,6 +104,37 @@ test("native Responses routing preserves unknown JSON while replacing model and 
   assert.match(await response.text(), /response\.completed/);
 });
 
+test("gateway repairs a stale provider-prefixed model before forwarding the request", async (t) => {
+  let upstreamModel;
+  const upstream = http.createServer(async (req, res) => {
+    const chunks = [];
+    for await (const chunk of req) chunks.push(chunk);
+    upstreamModel = JSON.parse(Buffer.concat(chunks).toString("utf8")).model;
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify({ id: "resp_test", object: "response", output: [] }));
+  });
+  const upstreamUrl = await listen(upstream);
+  t.after(() => new Promise((resolve) => upstream.close(resolve)));
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "9codex-gateway-test-"));
+  const paths = resolvePaths(home);
+  routingFixture(paths);
+  const gateway = createGateway(gatewayConfig(upstreamUrl), paths);
+  const gatewayUrl = await listen(gateway);
+  t.after(() => new Promise((resolve) => gateway.close(resolve)));
+
+  const response = await fetch(`${gatewayUrl}/v1/responses`, {
+    method: "POST",
+    headers: {
+      authorization: "Bearer 9codex_local_test",
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({ model: "openai/raw-model", input: "continue old task", stream: false }),
+  });
+
+  assert.equal(response.status, 200);
+  assert.equal(upstreamModel, "raw/model");
+});
+
 test("rejects requests without the configured local bearer token", async (t) => {
   const upstream = http.createServer((req, res) => res.end());
   const upstreamUrl = await listen(upstream);

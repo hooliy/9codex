@@ -1,6 +1,6 @@
 {
   "name": "@hooliy/9codex",
-  "version": "1.1.6",
+  "version": "1.1.7",
   "description": "OpenAI-compatible local model gateway for Codex Desktop",
   "author": "hooliy1",
   "license": "MIT",

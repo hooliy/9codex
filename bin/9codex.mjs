@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { spawn } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -7,10 +8,7 @@ import { fileURLToPath } from "node:url";
 import { buildCatalog, writeCatalog } from "../lib/catalog.mjs";
 import {
   injectCodexConfig,
-  migrateCodexHistoryProviders,
-  repairCodexHistoryProviders,
   restoreCodexConfig,
-  restoreCodexHistoryProviders,
 } from "../lib/codex-config.mjs";
 import {
   defaultConfig,
@@ -30,7 +28,7 @@ import { runMcpServer } from "../lib/mcp.mjs";
 import { restartCodex } from "../lib/platform.mjs";
 import { resolvePaths } from "../lib/paths.mjs";
 import { installService, restartService, uninstallService } from "../lib/service.mjs";
-import { runStagedUpdate } from "../lib/updater.mjs";
+import { resolveLatestVersion, runStagedUpdate } from "../lib/updater.mjs";
 import {
   askApiKey,
   askBaseUrl,
@@ -176,15 +174,43 @@ async function waitForHealth(config, timeoutMs = 20_000, expectedVersion = null)
   return null;
 }
 
-async function repairCodex(config) {
+function runInstalledCli(command) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [cliPath, command], {
+      stdio: "inherit",
+      windowsHide: true,
+    });
+    child.on("error", reject);
+    child.on("close", (status) => {
+      if (status === 0) resolve();
+      else reject(new Error(`9codex ${command} exited with ${status}`));
+    });
+  });
+}
+
+async function withDesktopMaintenance(operation) {
+  fs.mkdirSync(paths.stateDir, { recursive: true, mode: 0o700 });
+  fs.writeFileSync(paths.desktopMaintenance, `${JSON.stringify({
+    pid: process.pid,
+    expires_at: Date.now() + 120_000,
+  })}\n`, { mode: 0o600 });
+  try {
+    return await operation();
+  } finally {
+    try {
+      fs.unlinkSync(paths.desktopMaintenance);
+    } catch {}
+  }
+}
+
+async function configureCodex(config) {
   injectCodexConfig(paths, config, { nodePath: process.execPath, cliPath });
-  return repairCodexHistoryProviders(paths);
 }
 
 async function restartCodexWithRepair(config) {
   return restartCodex({
     sessionFile: paths.desktopSession,
-    beforeOpen: () => repairCodex(config),
+    beforeOpen: () => configureCodex(config),
   });
 }
 
@@ -193,19 +219,20 @@ async function install(config, { refresh = true } = {}) {
     throw new Error("尚未配置中转。请先运行 `9codex init`");
   }
   if (refresh) await refreshCatalog(config);
-  migrateCodexHistoryProviders(paths);
   await installService(paths, { cliPath, nodePath: process.execPath });
-  await restartService(paths);
-  const ready = await waitForHealth(config, 20_000, packageInfo.version);
-  if (!ready) throw new Error("9codex service did not become healthy");
-  let codex;
-  try {
-    codex = await restartCodexWithRepair(config);
-  } catch (error) {
-    await repairCodex(config);
-    codex = { codex_restarted: false, error: error.message };
-  }
-  return { health: ready, codex };
+  return withDesktopMaintenance(async () => {
+    await restartService(paths);
+    const ready = await waitForHealth(config, 20_000, packageInfo.version);
+    if (!ready) throw new Error("9codex service did not become healthy");
+    let codex;
+    try {
+      codex = await restartCodexWithRepair(config);
+    } catch (error) {
+      await configureCodex(config);
+      codex = { codex_restarted: false, error: error.message };
+    }
+    return { health: ready, codex };
+  });
 }
 
 const [command = "status", ...args] = process.argv.slice(2);
@@ -214,7 +241,6 @@ try {
   switch (command) {
     case "init": {
       let config = ensureConfig();
-      migrateCodexHistoryProviders(paths);
       const controlPlaneUrl = args[0] || process.env.NINECODEX_API_URL || config.control_plane.base_url;
       if (controlPlaneUrl) {
         config = await runInitFlow(paths, controlPlaneUrl, { version: packageInfo.version });
@@ -260,7 +286,11 @@ try {
         console.log(JSON.stringify({ ...result.codex, service_self_healed: true }, null, 2));
         break;
       }
-      console.log(JSON.stringify(await restartCodexWithRepair(cfg), null, 2));
+      console.log(JSON.stringify(
+        await withDesktopMaintenance(() => restartCodexWithRepair(cfg)),
+        null,
+        2,
+      ));
       break;
     }
     case "auth-token":
@@ -295,8 +325,7 @@ try {
     }
     case "update": {
       const config = loadConfig(paths);
-      const target = args[0] || config.updates.target_version;
-      if (!target) throw new Error("No target version is configured");
+      const target = args[0] || await resolveLatestVersion(config.updates);
       const result = await runStagedUpdate({
         package: "@hooliy/9codex",
         version: target,
@@ -305,7 +334,7 @@ try {
       }, {
         currentVersion: packageInfo.version,
         policy: config.updates,
-        restart: () => restartService(paths),
+        activate: () => runInstalledCli("install"),
         health: async () => Boolean(await waitForHealth(loadConfig(paths))),
       });
       console.log(JSON.stringify(result, null, 2));
@@ -316,7 +345,6 @@ try {
       break;
     case "uninstall":
       await uninstallService(paths);
-      restoreCodexHistoryProviders(paths);
       restoreCodexConfig(paths);
       console.log("9codex service removed and the prior Codex configuration restored. Local 9codex configuration was retained.");
       break;
@@ -325,13 +353,14 @@ try {
         version: packageInfo.version,
         nodePath: process.execPath,
         cliPath,
+        restartCodex: () => withDesktopMaintenance(() => restartCodexWithRepair(loadConfig(paths))),
         onError: (error) => console.error(`9codex daemon: ${error.message}`),
         updatePackage: async (request) => {
           const active = loadConfig(paths);
           return runStagedUpdate(request, {
             currentVersion: packageInfo.version,
             policy: active.updates,
-            restart: () => restartService(paths),
+            activate: () => runInstalledCli("install"),
             health: async () => Boolean(await waitForHealth(loadConfig(paths))),
           });
         },
