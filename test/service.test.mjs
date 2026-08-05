@@ -72,11 +72,12 @@ test("Windows install removes scoped stale daemons before registering the new ru
   assert.ok(calls.indexOf(cleanup) < calls.findIndex(([, args]) => /Register-ScheduledTask/.test(args.at(-1))));
 });
 
-test("macOS install retries launchd bootstrap while the previous agent is still unloading", async () => {
+test("macOS install waits for the previous launch agent to unload before registering", async () => {
   const paths = resolvePaths(fs.mkdtempSync(path.join(os.tmpdir(), "9codex-service-test-")));
   const calls = [];
   const waits = [];
-  let bootstrapAttempts = 0;
+  let printAttempts = 0;
+  let bootstrapped = false;
 
   const installed = await installService(paths, {
     platform: "darwin",
@@ -86,17 +87,50 @@ test("macOS install retries launchd bootstrap while the previous agent is still 
     run: async (file, args) => {
       calls.push([file, args]);
       if (args[0] === "bootstrap") {
-        bootstrapAttempts += 1;
-        return bootstrapAttempts === 1 ? 5 : 0;
+        bootstrapped = true;
+        return 0;
+      }
+      if (args[0] === "print") {
+        printAttempts += 1;
+        if (!bootstrapped) return printAttempts === 1 ? 0 : 113;
+        return printAttempts === 3 ? 113 : 0;
       }
       return 0;
     },
   });
 
   assert.equal(installed, true);
-  assert.equal(bootstrapAttempts, 2);
-  assert.deepEqual(waits, [250]);
+  assert.equal(printAttempts, 4);
+  assert.deepEqual(waits, [250, 250]);
   assert.equal(calls.filter(([, args]) => args[0] === "bootout").length, 1);
+  assert.ok(
+    calls.findIndex(([, args]) => args[0] === "print")
+      < calls.findIndex(([, args]) => args[0] === "bootstrap"),
+  );
+});
+
+test("macOS install reports the launchctl bootstrap error", async () => {
+  const paths = resolvePaths(fs.mkdtempSync(path.join(os.tmpdir(), "9codex-service-test-")));
+
+  await assert.rejects(
+    installService(paths, {
+      platform: "darwin",
+      nodePath: "/opt/9codex/node",
+      cliPath: "/opt/9codex/9codex.mjs",
+      run: async (_file, args) => {
+        if (args[0] === "print") return 113;
+        if (args[0] === "bootstrap") {
+          return {
+            status: 5,
+            stdout: "",
+            stderr: "Bootstrap failed: 5: Input/output error",
+          };
+        }
+        return 0;
+      },
+    }),
+    /launchctl bootstrap failed with status 5: Bootstrap failed: 5: Input\/output error/,
+  );
 });
 
 test("Windows restart terminates only the recorded 9codex daemon before starting the task", async () => {
