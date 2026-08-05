@@ -21,9 +21,10 @@ test("Windows install registers an invisible supervised daemon instead of a visi
     },
   });
 
-  assert.equal(calls.length, 1);
-  assert.equal(calls[0][0], "powershell.exe");
-  const registration = calls[0][1].at(-1);
+  assert.ok(calls.length >= 1);
+  const registrationCall = calls.find(([, args]) => /-WindowStyle Hidden/.test(args.at(-1)));
+  assert.ok(registrationCall, "expected a task registration call");
+  const registration = registrationCall[1].at(-1);
   assert.match(registration, /-WindowStyle Hidden/);
   assert.match(registration, /RestartCount 999/);
   assert.match(registration, /RestartInterval/);
@@ -79,7 +80,10 @@ test("Windows restart terminates only the recorded 9codex daemon before starting
   assert.equal(calls[1][0], "powershell.exe");
   assert.match(calls[1][1].at(-1), /recordedPid = 4321/);
   assert.equal(calls[1][1].at(-1).includes("9codex\\.mjs"), true);
-  assert.deepEqual(calls[2], ["schtasks.exe", ["/Run", "/TN", "9codex"]]);
+  // killStaleDaemonLoops runs between terminate and restart
+  assert.equal(calls[2][0], "powershell.exe");
+  assert.match(calls[2][1].at(-1), /Get-CimInstance/);
+  assert.deepEqual(calls[3], ["schtasks.exe", ["/Run", "/TN", "9codex"]]);
 });
 
 test("Windows uninstall also terminates a validated recorded daemon", async () => {
@@ -97,4 +101,36 @@ test("Windows uninstall also terminates a validated recorded daemon", async () =
   });
 
   assert.equal(calls.some(([file, args]) => file === "powershell.exe" && args.at(-1).includes("recordedPid = 7654")), true);
+});
+
+test("Windows install terminates stale daemon loops and rotates the daemon log before registering", async () => {
+  const paths = resolvePaths(fs.mkdtempSync(path.join(os.tmpdir(), "9codex-service-test-")));
+  fs.mkdirSync(paths.logDir, { recursive: true });
+  fs.writeFileSync(paths.daemonLog, "old crash loop noise\n".repeat(5000));
+  const calls = [];
+
+  await installService(paths, {
+    platform: "win32",
+    nodePath: "C:\\Program Files\\nodejs\\node.exe",
+    cliPath: "C:\\Users\\Test\\AppData\\Roaming\\npm\\node_modules\\9codex\\bin\\9codex.mjs",
+    run: async (file, args) => {
+      calls.push([file, args]);
+      return 0;
+    },
+  });
+
+  // Before registering the task, stale daemon loops must be killed.
+  const killCall = calls.find(([file, args]) =>
+    file === "powershell.exe"
+    && /Get-CimInstance/.test(args.at(-1))
+    && /9codex/.test(args.at(-1))
+    && /daemon/.test(args.at(-1))
+    && /Stop-Process/.test(args.at(-1)),
+  );
+  assert.ok(killCall, "expected a stale-loop termination call before task registration");
+  // The registration call must come after the kill call.
+  assert.ok(calls.indexOf(killCall) < calls.length - 1);
+  // The old log noise must be gone (rotated), not appended forever.
+  const logContent = fs.readFileSync(paths.daemonLog, "utf8");
+  assert.equal(logContent.includes("old crash loop noise"), false);
 });
