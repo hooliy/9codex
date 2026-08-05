@@ -94,7 +94,7 @@ test("reinjection is idempotent and uninstall restores the exact original bytes"
   assert.equal(fs.existsSync(paths.codexState), false);
 });
 
-test("history compatibility maps legacy providers in the Codex index without changing other providers", () => {
+test("history task rebind moves every persisted provider to 9codex", () => {
   const { paths } = fixture();
   const database = new DatabaseSync(paths.codexStateDb);
   database.exec("CREATE TABLE threads (id TEXT PRIMARY KEY, model_provider TEXT NOT NULL)");
@@ -111,12 +111,12 @@ test("history compatibility maps legacy providers in the Codex index without cha
     .map((row) => ({ ...row }));
   migrated.close();
 
-  assert.deepEqual(result, { databases: 1, migrated: 2, files: 0, busy: 0 });
+  assert.deepEqual(result, { databases: 1, migrated: 3, files: 0, busy: 0 });
   assert.deepEqual(providers, [
     { id: "current-9codex", model_provider: "9codex" },
     { id: "old-bridge", model_provider: "9codex" },
     { id: "old-openai", model_provider: "9codex" },
-    { id: "unrelated-ollama", model_provider: "ollama" },
+    { id: "unrelated-ollama", model_provider: "9codex" },
   ]);
   assert.equal(fs.statSync(paths.historyProviderState).mode & 0o777, 0o600);
 });
@@ -296,4 +296,132 @@ test("injectCodexConfig migrates legacy spanai history during install", () => {
 
   const migrated = JSON.parse(fs.readFileSync(rollout, "utf8").split("\n", 1)[0]);
   assert.equal(migrated.payload.model_provider, "9codex");
+});
+
+test("install rebinds every persisted task runtime field without rewriting conversation text", () => {
+  const { paths } = fixture();
+  const sessionDirectory = path.join(paths.codexHome, "sessions", "2026", "07", "28");
+  fs.mkdirSync(sessionDirectory, { recursive: true });
+  const rollout = path.join(sessionDirectory, "rollout-stale-runtime.jsonl");
+  const events = [
+    {
+      type: "session_meta",
+      payload: { id: "stale-runtime", model_provider: "9codex" },
+    },
+    {
+      type: "event_msg",
+      payload: {
+        thread_settings: {
+          model: "spanai/fangan",
+          collaboration_mode: { settings: { model: "spanai/fangan" } },
+        },
+      },
+    },
+    {
+      type: "turn_context",
+      payload: {
+        model: "oldgateway/example-model",
+        collaboration_mode: { settings: { model: "oldgateway/example-model" } },
+      },
+    },
+    {
+      type: "event_msg",
+      payload: {
+        message: "用户正文 model_provider=spanai，模型 spanai/fangan，不允许改写",
+      },
+    },
+  ];
+  fs.writeFileSync(rollout, `${events.map((event) => JSON.stringify(event)).join("\n")}\n`);
+
+  const database = new DatabaseSync(paths.codexStateDb);
+  database.exec(
+    "CREATE TABLE threads (id TEXT PRIMARY KEY, model_provider TEXT NOT NULL, model TEXT NOT NULL)",
+  );
+  database.prepare(
+    "INSERT INTO threads (id, model_provider, model) VALUES (?, ?, ?)",
+  ).run("stale-runtime", "9codex", "spanai/fangan");
+  database.close();
+
+  injectCodexConfig(paths, config(), { nodePath: "node", cliPath: "9codex.mjs" });
+
+  const rebound = new DatabaseSync(paths.codexStateDb, { readOnly: true });
+  assert.deepEqual(
+    { ...rebound.prepare(
+      "SELECT model_provider, model FROM threads WHERE id = ?",
+    ).get("stale-runtime") },
+    { model_provider: "9codex", model: "9codex/fangan" },
+  );
+  rebound.close();
+
+  const migrated = fs.readFileSync(rollout, "utf8").trimEnd().split("\n").map(JSON.parse);
+  assert.equal(migrated[0].payload.model_provider, "9codex");
+  assert.equal(migrated[1].payload.thread_settings.model, "9codex/fangan");
+  assert.equal(
+    migrated[1].payload.thread_settings.collaboration_mode.settings.model,
+    "9codex/fangan",
+  );
+  assert.equal(migrated[2].payload.model, "9codex/example-model");
+  assert.equal(
+    migrated[2].payload.collaboration_mode.settings.model,
+    "9codex/example-model",
+  );
+  assert.equal(migrated[3].payload.message, events[3].payload.message);
+});
+
+test("install upgrades an earlier provider-only repair and fixes the remaining model namespace", () => {
+  const { paths } = fixture();
+  const sessionDirectory = path.join(paths.codexHome, "sessions", "2026", "07", "28");
+  fs.mkdirSync(sessionDirectory, { recursive: true });
+  const rollout = path.join(sessionDirectory, "rollout-partially-repaired.jsonl");
+  const originalFirstLine = JSON.stringify({
+    type: "session_meta",
+    payload: { id: "partially-repaired", model_provider: "spanai" },
+  });
+  const currentFirstLine = JSON.stringify({
+    type: "session_meta",
+    payload: { id: "partially-repaired", model_provider: "9codex" },
+  });
+  fs.writeFileSync(rollout, [
+    currentFirstLine,
+    JSON.stringify({
+      type: "turn_context",
+      payload: { model: "spanai/fangan" },
+    }),
+    "",
+  ].join("\n"));
+
+  const database = new DatabaseSync(paths.codexStateDb);
+  database.exec(
+    "CREATE TABLE threads (id TEXT PRIMARY KEY, model_provider TEXT NOT NULL, model TEXT NOT NULL)",
+  );
+  database.prepare(
+    "INSERT INTO threads (id, model_provider, model) VALUES (?, ?, ?)",
+  ).run("partially-repaired", "9codex", "spanai/fangan");
+  database.close();
+  fs.mkdirSync(path.dirname(paths.historyProviderState), { recursive: true });
+  fs.writeFileSync(paths.historyProviderState, `${JSON.stringify({
+    version: 1,
+    rows: [{
+      database: paths.codexStateDb,
+      id: "partially-repaired",
+      provider: "spanai",
+    }],
+    files: [{
+      file: rollout,
+      first_line_base64: Buffer.from(originalFirstLine).toString("base64"),
+    }],
+  })}\n`);
+
+  injectCodexConfig(paths, config(), { nodePath: "node", cliPath: "9codex.mjs" });
+
+  const rebound = new DatabaseSync(paths.codexStateDb, { readOnly: true });
+  assert.deepEqual(
+    { ...rebound.prepare(
+      "SELECT model_provider, model FROM threads WHERE id = ?",
+    ).get("partially-repaired") },
+    { model_provider: "9codex", model: "9codex/fangan" },
+  );
+  rebound.close();
+  const migrated = fs.readFileSync(rollout, "utf8").trimEnd().split("\n").map(JSON.parse);
+  assert.equal(migrated[1].payload.model, "9codex/fangan");
 });
