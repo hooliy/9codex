@@ -300,3 +300,33 @@ test("keeps temporary upstream rate limits retryable", async (t) => {
     error: { message: "Too many requests; retry shortly" },
   });
 });
+test("does not crash the gateway when the upstream stream aborts mid-body", async (t) => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "9codex-gateway-test-"));
+  const paths = resolvePaths(home);
+  routingFixture(paths);
+  const gateway = createGateway(gatewayConfig("http://127.0.0.1:1/v1"), paths, {
+    fetchImpl: async () => new Response(
+      new ReadableStream({
+        pull(controller) {
+          controller.enqueue(new TextEncoder().encode('data: {"id":"chat_1","choices":[{"delta":{"content":"partial"}}]}\n\n'));
+          controller.error(new Error("upstream aborted"));
+        },
+      }),
+      { status: 200, headers: { "content-type": "text/event-stream" } },
+    ),
+  });
+  const gatewayUrl = await listen(gateway);
+  t.after(() => new Promise((resolve) => gateway.close(resolve)));
+
+  const response = await fetch(`${gatewayUrl}/v1/responses`, {
+    method: "POST",
+    headers: { authorization: "Bearer 9codex_local_test", "content-type": "application/json" },
+    body: JSON.stringify({ model: "9codex/raw-model", input: "hello", stream: true }),
+  });
+  // 上游中途断开时网关仍应优雅结束响应,而不是崩溃或挂起。
+  await response.text();
+
+  // The gateway process must still be alive and serving a fresh request.
+  const probe = await fetch(`${gatewayUrl}/healthz`);
+  assert.equal(probe.status, 200);
+});

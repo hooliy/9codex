@@ -30,13 +30,17 @@ test("Windows restart targets only packaged Codex and waits for a new process", 
     file: "taskkill.exe",
     args: ["/IM", "ChatGPT.exe", "/T", "/F"],
   });
-  assert.equal(calls[1].file, "powershell.exe");
-  assert.equal(calls[1].args.includes("-WindowStyle"), true);
-  assert.match(calls[1].args.at(-1), /ApplicationActivationManager/);
-  assert.match(calls[1].args.at(-1), /OpenAI\.Codex_2p2nqsd0c76g0!App/);
-  assert.doesNotMatch(calls[1].args.at(-1), /Get-ChildItem/);
-  assert.match(calls[1].args.at(-1), /--remote-debugging-address=127\.0\.0\.1/);
-  assert.match(calls[1].args.at(-1), /--remote-debugging-port=53111/);
+  assert.deepEqual(calls[1], {
+    file: "taskkill.exe",
+    args: ["/IM", "codex.exe", "/T", "/F"],
+  });
+  assert.equal(calls[2].file, "powershell.exe");
+  assert.equal(calls[2].args.includes("-WindowStyle"), true);
+  assert.match(calls[2].args.at(-1), /ApplicationActivationManager/);
+  assert.match(calls[2].args.at(-1), /OpenAI\.Codex_2p2nqsd0c76g0!App/);
+  assert.doesNotMatch(calls[2].args.at(-1), /Get-ChildItem/);
+  assert.match(calls[2].args.at(-1), /--remote-debugging-address=127\.0\.0\.1/);
+  assert.match(calls[2].args.at(-1), /--remote-debugging-port=53111/);
   assert.equal(result.codex_restarted, true);
   assert.deepEqual(result.previous_pids, [101]);
   assert.deepEqual(result.current_pids, [202]);

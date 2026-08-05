@@ -221,3 +221,29 @@ test("history restoration restores rollout metadata even while Codex holds its S
   lock.exec("ROLLBACK");
   lock.close();
 });
+
+test("history compatibility migrates legacy spanai sessions to 9codex", () => {
+  const { paths } = fixture();
+  const sessionDirectory = path.join(paths.codexHome, "sessions", "2026", "08", "01");
+  const rollout = path.join(sessionDirectory, "rollout-spanai.jsonl");
+  fs.mkdirSync(sessionDirectory, { recursive: true });
+  fs.writeFileSync(rollout, `${JSON.stringify({
+    type: "session_meta",
+    payload: { id: "old-spanai", model_provider: "spanai" },
+  })}\n`);
+  const database = new DatabaseSync(paths.codexStateDb);
+  database.exec("CREATE TABLE threads (id TEXT PRIMARY KEY, model_provider TEXT NOT NULL)");
+  database.prepare("INSERT INTO threads (id, model_provider) VALUES (?, ?)").run("old-spanai", "spanai");
+  database.close();
+
+  const result = migrateCodexHistoryProviders(paths);
+
+  assert.equal(result.files, 1);
+  assert.equal(JSON.parse(fs.readFileSync(rollout, "utf8").split("\n", 1)[0]).payload.model_provider, "9codex");
+  const migrated = new DatabaseSync(paths.codexStateDb, { readOnly: true });
+  assert.equal(
+    migrated.prepare("SELECT model_provider FROM threads WHERE id = ?").get("old-spanai").model_provider,
+    "9codex",
+  );
+  migrated.close();
+});

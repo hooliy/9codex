@@ -8,6 +8,8 @@ import {
   dispatchRemoteCommand,
   maintainCodexModelPicker,
   parseSseCommands,
+  startGatewayServer,
+  terminateStaleDaemon,
 } from "../lib/daemon.mjs";
 import { resolvePaths } from "../lib/paths.mjs";
 
@@ -163,4 +165,65 @@ test("desktop watcher adopts a session created by the CLI instead of restarting 
   assert.equal(result, "healthy");
   assert.equal(state.port, 53115);
   assert.equal(restarts, 0);
+});
+
+test("terminates a stale 9codex daemon recorded in the pid file", async () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "9codex-daemon-test-"));
+  const paths = resolvePaths(home);
+  fs.mkdirSync(paths.stateDir, { recursive: true });
+  fs.writeFileSync(paths.daemonPid, "7654\n", { mode: 0o600 });
+
+  const calls = [];
+  const killed = await terminateStaleDaemon(paths, {
+    platform: "win32",
+    run: async (file, args) => { calls.push([file, args]); return 0; },
+  });
+
+  assert.equal(killed, true);
+  assert.deepEqual(calls, [["taskkill.exe", ["/PID", "7654", "/F", "/T"]]]);
+  assert.equal(fs.existsSync(paths.daemonPid), false);
+});
+
+test("does not terminate when the pid file is missing or stale", async () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "9codex-daemon-test-"));
+  const paths = resolvePaths(home);
+
+  assert.equal(await terminateStaleDaemon(paths, {
+    platform: "darwin",
+    run: async () => 1,
+  }), false);
+
+  fs.mkdirSync(paths.stateDir, { recursive: true });
+  fs.writeFileSync(paths.daemonPid, "999999\n");
+  const calls = [];
+  assert.equal(await terminateStaleDaemon(paths, {
+    platform: "darwin",
+    run: async (file, args) => { calls.push([file, args]); return 1; },
+  }), false);
+  assert.deepEqual(calls, [["/bin/kill", ["-9", "999999"]]]);
+});
+
+test("takes over the gateway port when a stale daemon still owns it", async () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "9codex-daemon-test-"));
+  const paths = resolvePaths(home);
+  fs.mkdirSync(paths.stateDir, { recursive: true });
+  fs.writeFileSync(paths.daemonPid, "4321\n", { mode: 0o600 });
+  const fakeServer = {
+    listens: 0,
+    once() {},
+    listen(port, host, cb) {
+      this.listens += 1;
+      if (this.listens === 1) cb(new Error("listen EADDRINUSE: address already in use 127.0.0.1:10101"));
+      else cb();
+    },
+  };
+  const options = {
+    platform: "win32",
+    createGateway: () => fakeServer,
+    run: async () => 0,
+  };
+  const server = await startGatewayServer(paths, { local: { host: "127.0.0.1", port: 10101 } }, options);
+  assert.equal(server, fakeServer);
+  assert.equal(server.listens, 2);
+  assert.equal(fs.existsSync(paths.daemonPid), false);
 });
