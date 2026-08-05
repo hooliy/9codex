@@ -247,3 +247,23 @@ test("history compatibility migrates legacy spanai sessions to 9codex", () => {
   );
   migrated.close();
 });
+
+test("injectCodexConfig migrates legacy spanai history during install", () => {
+  const { paths } = fixture();
+  const sessionDirectory = path.join(paths.codexHome, "sessions", "2026", "07", "31");
+  fs.mkdirSync(sessionDirectory, { recursive: true });
+  const rollout = path.join(sessionDirectory, "rollout-init-spanai.jsonl");
+  fs.writeFileSync(rollout, `${JSON.stringify({
+    type: "session_meta",
+    payload: { id: "init-spanai", model_provider: "spanai" },
+  })}\n`);
+
+  // injectCodexConfig is what install() calls; it must trigger migration.
+  injectCodexConfig(paths, config(), {
+    nodePath: "node",
+    cliPath: "9codex.mjs",
+  });
+
+  const migrated = JSON.parse(fs.readFileSync(rollout, "utf8").split("\n", 1)[0]);
+  assert.equal(migrated.payload.model_provider, "9codex");
+});

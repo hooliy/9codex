@@ -226,9 +226,16 @@ try {
       if (!(await waitForHealth(loadConfig(paths)))) throw new Error("9codex service restart failed");
       console.log("9codex service restarted.");
       break;
-    case "codex-restart":
+    case "codex-restart": {
+      const cfg = loadConfig(paths);
+      if (!(await health(cfg))) {
+        await restartService(paths);
+        const ready = await waitForHealth(cfg);
+        if (!ready) throw new Error("9codex daemon is not healthy; run `9codex init` or `9codex install` first");
+      }
       console.log(JSON.stringify(await restartCodex({ sessionFile: paths.desktopSession }), null, 2));
       break;
+    }
     case "auth-token":
       process.stdout.write(`${loadConfig(paths).local.token}\n`);
       break;
