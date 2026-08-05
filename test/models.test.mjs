@@ -163,3 +163,25 @@ test("respects an explicit image input opt-out", async () => {
 
   assert.equal(rows[0].capabilities.image_input, false);
 });
+
+test("treats upstream vision:false as image input opt-out", async () => {
+  const config = {
+    upstream: {
+      base_url: "https://router.example/v1",
+      api_key: "secret",
+      default_model: "no-vision-model",
+    },
+  };
+  const rows = await refreshUpstreamModels(config, {
+    fetchImpl: async () => new Response(JSON.stringify({
+      data: [{ id: "no-vision-model", capabilities: { vision: false } }],
+    }), { status: 200, headers: { "content-type": "application/json" } }),
+  });
+  const catalog = buildCatalog({
+    upstream: config.upstream,
+    models: { available: rows },
+  });
+
+  assert.equal(rows[0].capabilities.image_input, false);
+  assert.deepEqual(catalog.models[0].input_modalities, ["text"]);
+});

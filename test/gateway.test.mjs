@@ -66,7 +66,18 @@ test("native Responses routing preserves unknown JSON while replacing model and 
   t.after(() => new Promise((resolve) => gateway.close(resolve)));
   const body = {
     model: "9codex/raw-model",
-    input: "hello",
+    input: [
+      { role: "user", content: "hello" },
+      { type: "future_input_item", payload: { keep: true } },
+      {
+        type: "function_call",
+        id: "fc_empty",
+        call_id: "call_empty",
+        name: "",
+        arguments: "{}",
+      },
+      { type: "function_call_output", call_id: "call_empty", output: "stale" },
+    ],
     future_field: { nested: [1, 2, 3] },
   };
 
@@ -85,6 +96,10 @@ test("native Responses routing preserves unknown JSON while replacing model and 
   assert.equal(captured.authorization, "Bearer upstream-secret");
   assert.equal(captured.encoding, undefined);
   assert.equal(captured.body.model, "raw/model");
+  assert.deepEqual(captured.body.input, [
+    { role: "user", content: "hello" },
+    { type: "future_input_item", payload: { keep: true } },
+  ]);
   assert.deepEqual(captured.body.future_field, { nested: [1, 2, 3] });
   assert.match(await response.text(), /response\.completed/);
 });
