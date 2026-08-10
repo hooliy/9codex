@@ -39,7 +39,7 @@ test("rejects unknown, expired, duplicate, and out-of-sequence commands", () => 
   }
 });
 
-test("persists replay protection before executing an accepted command", async () => {
+test("persists replay protection only after an accepted command succeeds", async () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "9codex-command-test-"));
   const paths = resolvePaths(home);
   let restarted = 0;
@@ -65,6 +65,26 @@ test("persists replay protection before executing an accepted command", async ()
     }),
     (error) => error.code === "duplicate_command",
   );
+});
+
+test("failed commands remain replayable after the dependency recovers", async () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "9codex-command-test-"));
+  const paths = resolvePaths(home);
+  let healthy = false;
+  const context = {
+    paths,
+    now: () => now,
+    config: { codex: { restart_policy: "automatic" } },
+    restartCodex: async () => {
+      if (!healthy) throw new Error("restart failed");
+      return { codex_restarted: true };
+    },
+  };
+
+  await assert.rejects(() => executeCommand(command(), context), /restart failed/);
+  assert.equal(fs.existsSync(paths.commandState), false);
+  healthy = true;
+  assert.deepEqual(await executeCommand(command(), context), { codex_restarted: true });
 });
 
 test("allows only typed package update payloads and does not accept shell text", async () => {

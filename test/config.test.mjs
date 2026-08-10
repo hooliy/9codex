@@ -5,19 +5,19 @@ import path from "node:path";
 import test from "node:test";
 
 import {
-  loadConfig,
   defaultConfig,
   migrateLegacyConfig,
   redactConfig,
   saveConfigAtomic,
 } from "../lib/config.mjs";
+import { reconcileModelState } from "../lib/model-state.mjs";
 import { resolvePaths } from "../lib/paths.mjs";
 
 function temporaryHome() {
   return fs.mkdtempSync(path.join(os.tmpdir(), "9codex-config-test-"));
 }
 
-test("migrates a legacy bridge config into the 9codex schema", () => {
+test("legacy migration returns a candidate and persists only through reconciliation", async () => {
   const home = temporaryHome();
   const paths = resolvePaths(home);
   fs.mkdirSync(path.dirname(paths.legacyConfig), { recursive: true });
@@ -46,7 +46,11 @@ test("migrates a legacy bridge config into the 9codex schema", () => {
   assert.equal(migrated.models.refresh_interval_seconds, 480);
   assert.equal(migrated.codex.inject_config, true);
   assert.equal(migrated.codex.restart_policy, "automatic");
-  assert.equal(loadConfig(paths).upstream.api_key, "upstream-secret");
+  assert.equal(fs.existsSync(paths.config), false);
+  await reconcileModelState(paths, migrated, {
+    authoritativeModels: [{ id: "yuanpi-auto", context_window: 1_050_000 }],
+  });
+  assert.equal(JSON.parse(fs.readFileSync(paths.config)).upstream.api_key, "upstream-secret");
   if (process.platform !== "win32") {
     assert.equal(fs.statSync(paths.config).mode & 0o777, 0o600);
   }

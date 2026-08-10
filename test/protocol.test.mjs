@@ -4,8 +4,26 @@ import test from "node:test";
 import {
   ChatResponseTranslator,
   applyCompatibilityProfile,
+  normalizeResponsesRequest,
   responsesToChatRequest,
 } from "../lib/protocol.mjs";
+
+test("removes invalid historical message IDs before forwarding Responses input", () => {
+  const result = normalizeResponsesRequest({
+    model: "upstream-model",
+    input: [
+      { type: "message", id: "item_9f6c2eaba8c9393522160fa0", role: "assistant", content: [] },
+      { type: "message", id: "", role: "assistant", content: [] },
+      { type: "message", id: "msg_valid", role: "user", content: [] },
+    ],
+  });
+
+  assert.deepEqual(result.input, [
+    { type: "message", role: "assistant", content: [] },
+    { type: "message", role: "assistant", content: [] },
+    { type: "message", id: "msg_valid", role: "user", content: [] },
+  ]);
+});
 
 test("converts Responses instructions, messages, tools, and tool results to Chat", () => {
   const result = responsesToChatRequest({

@@ -4,9 +4,124 @@ import test from "node:test";
 import { buildCatalog } from "../lib/catalog.mjs";
 import {
   enableAllModels,
+  isGptModelId,
   refreshUpstreamModels,
   selectEnabledModels,
 } from "../lib/models.mjs";
+
+test("classifies GPT model ids case-insensitively by their final path segment", () => {
+  for (const id of ["gpt-5.6-sol", "openai/GPT-4o", "cx/gpt5", "vendor/gpt_oss"]) {
+    assert.equal(isGptModelId(id), true, id);
+  }
+  for (const id of ["claude-opus", "vendor/notgpt-5", "vendor/my-gpt-5", "", null]) {
+    assert.equal(isGptModelId(id), false, String(id));
+  }
+});
+
+test("preserves explicit upstream context and output limits", async () => {
+  const config = {
+    upstream: {
+      base_url: "https://router.example/v1",
+      api_key: "secret",
+      default_model: "large-context-model",
+    },
+  };
+  const rows = await refreshUpstreamModels(config, {
+    fetchImpl: async () => new Response(JSON.stringify({
+      data: [{
+        id: "large-context-model",
+        context_window: 1_050_000,
+        max_output_tokens: 128_000,
+      }, {
+        id: "context-only-model",
+        context_window: 256_000,
+      }],
+    }), { status: 200, headers: { "content-type": "application/json" } }),
+  });
+
+  assert.equal(rows[0].context_window, 1_050_000);
+  assert.equal(rows[0].max_output_tokens, 128_000);
+  assert.equal(rows[1].context_window, 256_000);
+  assert.equal(Object.hasOwn(rows[1], "max_output_tokens"), false);
+});
+
+test("uses the product context window when upstream omits context_window", async () => {
+  const rows = await refreshUpstreamModels({
+    upstream: {
+      base_url: "https://router.example/v1",
+      api_key: "secret",
+    },
+  }, {
+    fetchImpl: async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({ data: [{ id: "fangan" }] }),
+    }),
+  });
+
+  assert.equal(rows[0].context_window, 1_050_000);
+});
+
+test("rejects explicitly invalid context limits with the model id", async () => {
+  const invalidValues = [
+    undefined,
+    null,
+    0,
+    -1,
+    "1050000",
+    1.5,
+    Number.NaN,
+    Infinity,
+    -Infinity,
+  ];
+
+  for (const context_window of invalidValues) {
+    const model = { id: "gpt-5.6-sol", context_window };
+    await assert.rejects(
+      refreshUpstreamModels({
+        upstream: {
+          base_url: "https://router.example/v1",
+          api_key: "secret",
+        },
+      }, {
+        fetchImpl: async () => ({
+          ok: true,
+          status: 200,
+          json: async () => ({ data: [model] }),
+        }),
+      }),
+      /Invalid context_window for model "gpt-5\.6-sol": expected a positive integer/,
+    );
+  }
+});
+
+test("rejects invalid optional output limits with the model id", async () => {
+  const invalidValues = [null, 0, -1, "128000", 1.5, Number.NaN, Infinity, -Infinity];
+
+  for (const max_output_tokens of invalidValues) {
+    await assert.rejects(
+      refreshUpstreamModels({
+        upstream: {
+          base_url: "https://router.example/v1",
+          api_key: "secret",
+        },
+      }, {
+        fetchImpl: async () => ({
+          ok: true,
+          status: 200,
+          json: async () => ({
+            data: [{
+              id: "broken-output",
+              context_window: 1_050_000,
+              max_output_tokens,
+            }],
+          }),
+        }),
+      }),
+      /Invalid max_output_tokens for model "broken-output": expected a positive integer/,
+    );
+  }
+});
 
 test("uses automatic protocol negotiation when an OpenAI model list has no protocol metadata", async () => {
   const config = {
@@ -18,7 +133,10 @@ test("uses automatic protocol negotiation when an OpenAI model list has no proto
   };
   const rows = await refreshUpstreamModels(config, {
     fetchImpl: async () => new Response(JSON.stringify({
-      data: [{ id: "yuanpi-auto" }, { id: "model-b", protocol: "chat_compat" }],
+      data: [
+        { id: "yuanpi-auto", context_window: 200_000 },
+        { id: "model-b", context_window: 200_000, protocol: "chat_compat" },
+      ],
     }), { status: 200, headers: { "content-type": "application/json" } }),
   });
 
@@ -53,7 +171,7 @@ test("rejects selecting unknown or disabled upstream models", () => {
   assert.throws(() => selectEnabledModels(config, ["model-b"]), /Unknown or disabled model/);
 });
 
-test("keeps native desktop image generation available when model metadata is omitted", async () => {
+test("keeps native desktop image generation available when capability metadata is omitted", async () => {
   const config = {
     upstream: {
       base_url: "https://router.example/v1",
@@ -62,7 +180,9 @@ test("keeps native desktop image generation available when model metadata is omi
     },
   };
   const rows = await refreshUpstreamModels(config, {
-    fetchImpl: async () => new Response(JSON.stringify({ data: [{ id: "fangan" }] }), {
+    fetchImpl: async () => new Response(JSON.stringify({
+      data: [{ id: "fangan", context_window: 200_000 }],
+    }), {
       status: 200,
       headers: { "content-type": "application/json" },
     }),
@@ -82,7 +202,9 @@ test("builds reasoning choices for models discovered without capability metadata
     },
   };
   const rows = await refreshUpstreamModels(config, {
-    fetchImpl: async () => new Response(JSON.stringify({ data: [{ id: "fangan" }] }), {
+    fetchImpl: async () => new Response(JSON.stringify({
+      data: [{ id: "fangan", context_window: 200_000 }],
+    }), {
       status: 200,
       headers: { "content-type": "application/json" },
     }),
@@ -110,9 +232,14 @@ test("respects explicit upstream reasoning capabilities", async () => {
   const rows = await refreshUpstreamModels(config, {
     fetchImpl: async () => new Response(JSON.stringify({
       data: [
-        { id: "no-reasoning", capabilities: { reasoning: false } },
+        {
+          id: "no-reasoning",
+          context_window: 200_000,
+          capabilities: { reasoning: false },
+        },
         {
           id: "custom-reasoning",
+          context_window: 200_000,
           capabilities: { reasoning: true, reasoning_levels: ["low", "high"] },
         },
       ],
@@ -135,7 +262,11 @@ test("preserves declared image input capability for the Codex model catalog", as
   };
   const rows = await refreshUpstreamModels(config, {
     fetchImpl: async () => new Response(JSON.stringify({
-      data: [{ id: "vision-model", capabilities: { image_input: true } }],
+      data: [{
+        id: "vision-model",
+        context_window: 200_000,
+        capabilities: { image_input: true },
+      }],
     }), { status: 200, headers: { "content-type": "application/json" } }),
   });
   const catalog = buildCatalog({
@@ -157,7 +288,11 @@ test("respects an explicit image input opt-out", async () => {
   };
   const rows = await refreshUpstreamModels(config, {
     fetchImpl: async () => new Response(JSON.stringify({
-      data: [{ id: "text-only-model", capabilities: { image_input: false } }],
+      data: [{
+        id: "text-only-model",
+        context_window: 200_000,
+        capabilities: { image_input: false },
+      }],
     }), { status: 200, headers: { "content-type": "application/json" } }),
   });
 
@@ -174,7 +309,11 @@ test("treats upstream vision:false as image input opt-out", async () => {
   };
   const rows = await refreshUpstreamModels(config, {
     fetchImpl: async () => new Response(JSON.stringify({
-      data: [{ id: "no-vision-model", capabilities: { vision: false } }],
+      data: [{
+        id: "no-vision-model",
+        context_window: 200_000,
+        capabilities: { vision: false },
+      }],
     }), { status: 200, headers: { "content-type": "application/json" } }),
   });
   const catalog = buildCatalog({
@@ -184,4 +323,34 @@ test("treats upstream vision:false as image input opt-out", async () => {
 
   assert.equal(rows[0].capabilities.image_input, false);
   assert.deepEqual(catalog.models[0].input_modalities, ["text"]);
+});
+
+test("model refresh does not retain upstream service tier metadata", async () => {
+  const config = {
+    upstream: {
+      base_url: "https://router.example/v1",
+      api_key: "secret",
+      default_model: "fast-model",
+    },
+  };
+  const rows = await refreshUpstreamModels(config, {
+    fetchImpl: async () => new Response(JSON.stringify({
+      data: [{
+        id: "gpt-5.6-sol",
+        context_window: 200_000,
+        service_tiers: [
+          {
+            id: "priority",
+            name: "Fast",
+            description: "1.5x speed, increased usage",
+          },
+          { id: "", name: "Broken", description: "invalid" },
+        ],
+        default_service_tier: "priority",
+      }],
+    }), { status: 200, headers: { "content-type": "application/json" } }),
+  });
+
+  assert.equal("service_tiers" in rows[0], false);
+  assert.equal("default_service_tier" in rows[0], false);
 });

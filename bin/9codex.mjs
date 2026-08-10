@@ -5,7 +5,16 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { buildCatalog, writeCatalog } from "../lib/catalog.mjs";
+import {
+  activateInstallation,
+  reconcileAndActivateInstallation,
+} from "../lib/activation.mjs";
+import {
+  ownsUpdateLock,
+  readPendingUpdate,
+  releaseUpdateLock,
+  waitForCodexIdle,
+} from "../lib/auto-update.mjs";
 import {
   injectCodexConfig,
   restoreCodexConfig,
@@ -15,19 +24,19 @@ import {
   loadConfig,
   migrateLegacyConfig,
   redactConfig,
-  saveConfigAtomic,
 } from "../lib/config.mjs";
 import { runDaemon } from "../lib/daemon.mjs";
 import { runInitFlow } from "../lib/init-flow.mjs";
 import {
   enableAllModels,
-  refreshUpstreamModels,
   selectEnabledModels,
 } from "../lib/models.mjs";
+import { reconcileModelState, validateModelState } from "../lib/model-state.mjs";
 import { runMcpServer } from "../lib/mcp.mjs";
 import { restartCodex } from "../lib/platform.mjs";
 import { resolvePaths } from "../lib/paths.mjs";
 import { installService, restartService, uninstallService } from "../lib/service.mjs";
+import { syncBundledSkills } from "../lib/skills.mjs";
 import { resolveLatestVersion, runStagedUpdate } from "../lib/updater.mjs";
 import {
   askApiKey,
@@ -43,43 +52,10 @@ const home = process.env.NINECODEX_HOME || os.homedir();
 const paths = resolvePaths(home);
 const cliPath = fileURLToPath(import.meta.url);
 
-function ensureConfig() {
+function loadCandidateConfig() {
   if (fs.existsSync(paths.config)) return loadConfig(paths);
   if (fs.existsSync(paths.legacyConfig)) return migrateLegacyConfig(paths, { deviceName: os.hostname() });
-  const config = defaultConfig({ deviceName: os.hostname() });
-  saveConfigAtomic(paths, config);
-  return config;
-}
-
-async function refreshCatalog(config, { strict = false } = {}) {
-  const upstreamChanged = config.models.source_base_url !== config.upstream.base_url;
-  try {
-    config.models.available = await refreshUpstreamModels(config);
-    config.models.source_base_url = config.upstream.base_url;
-    if (upstreamChanged) config.models.enabled_ids = null;
-    const availableIds = new Set(
-      config.models.available.filter((row) => row.enabled !== false).map((row) => row.id),
-    );
-    if (Array.isArray(config.models.enabled_ids)) {
-      const retained = config.models.enabled_ids.filter((id) => availableIds.has(id));
-      config.models.enabled_ids = retained.length > 0 ? retained : null;
-    }
-    const enabledIds = config.models.enabled_ids || [...availableIds];
-    if (enabledIds.length > 0 && !enabledIds.includes(config.upstream.default_model)) {
-      config.upstream.default_model = enabledIds[0];
-    }
-    saveConfigAtomic(paths, config);
-  } catch (error) {
-    if (strict) throw error;
-    if (config.models.source_base_url !== config.upstream.base_url) {
-      config.models.available = [];
-      config.models.source_base_url = config.upstream.base_url;
-      saveConfigAtomic(paths, config);
-    }
-    console.error(`9codex model refresh warning: ${error.message}`);
-  }
-  writeCatalog(paths, buildCatalog(config));
-  return config;
+  return defaultConfig({ deviceName: os.hostname() });
 }
 
 function isConfigured(config) {
@@ -103,15 +79,16 @@ async function runLocalInit(config) {
       config.models.enabled_ids = null;
       config.models.source_base_url = null;
     }
-    config = await refreshCatalog(config, { strict: true });
-    if (config.models.available.length === 0) {
-      throw new Error("中转未返回可用模型");
-    }
-    const enabledIds = await askModelSelection(rl, config.models.available);
-    config = enabledIds ? selectEnabledModels(config, enabledIds) : enableAllModels(config);
-    saveConfigAtomic(paths, config);
-    writeCatalog(paths, buildCatalog(config));
-    return config;
+    const result = await reconcileModelState(paths, config, {
+      candidateConfig: config,
+      prepareCandidate: async (candidate) => {
+        const enabledIds = await askModelSelection(rl, candidate.models.available);
+        return enabledIds
+          ? selectEnabledModels(candidate, enabledIds)
+          : enableAllModels(candidate);
+      },
+    });
+    return result.config;
   } finally {
     rl.close();
   }
@@ -121,21 +98,24 @@ async function syncModels(config) {
   if (!isConfigured(config)) {
     throw new Error("尚未配置中转。请先在交互终端运行 `9codex init`");
   }
-  config = await refreshCatalog(config, { strict: true });
-  if (isInteractive() && config.models.available.length > 0) {
-    const rl = createInterface();
-    try {
-      const enabledIds = await askModelSelection(rl, config.models.available, {
-        enabledIds: config.models.enabled_ids,
-        emptySelection: null,
-        emptyLabel: "保留当前选择",
-      });
-      if (enabledIds !== null) config = selectEnabledModels(config, enabledIds);
-      saveConfigAtomic(paths, config);
-      writeCatalog(paths, buildCatalog(config));
-    } finally {
-      rl.close();
-    }
+  const interactive = isInteractive();
+  const rl = interactive ? createInterface() : null;
+  try {
+    const result = await reconcileModelState(paths, config, {
+      prepareCandidate: interactive
+        ? async (candidate) => {
+            const enabledIds = await askModelSelection(rl, candidate.models.available, {
+              enabledIds: candidate.models.enabled_ids,
+              emptySelection: null,
+              emptyLabel: "保留当前选择",
+            });
+            return enabledIds === null ? candidate : selectEnabledModels(candidate, enabledIds);
+          }
+        : undefined,
+    });
+    config = result.config;
+  } finally {
+    rl?.close();
   }
   injectCodexConfig(paths, config, { nodePath: process.execPath, cliPath });
   const selected = Array.isArray(config.models.enabled_ids)
@@ -166,6 +146,7 @@ async function waitForHealth(config, timeoutMs = 20_000, expectedVersion = null)
     const result = await health(config, 1000);
     if (
       result?.ok
+      && result?.ready
       && result?.service === "9codex"
       && (!expectedVersion || result.version === expectedVersion)
     ) return result;
@@ -174,9 +155,12 @@ async function waitForHealth(config, timeoutMs = 20_000, expectedVersion = null)
   return null;
 }
 
-function runInstalledCli(command) {
+function runInstalledCli(installation, command, args = []) {
+  if (!installation?.cliPath) {
+    throw new Error("Updated package did not provide an installed CLI path");
+  }
   return new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, [cliPath, command], {
+    const child = spawn(process.execPath, [installation.cliPath, command, ...args], {
       stdio: "inherit",
       windowsHide: true,
     });
@@ -186,21 +170,6 @@ function runInstalledCli(command) {
       else reject(new Error(`9codex ${command} exited with ${status}`));
     });
   });
-}
-
-async function withDesktopMaintenance(operation) {
-  fs.mkdirSync(paths.stateDir, { recursive: true, mode: 0o700 });
-  fs.writeFileSync(paths.desktopMaintenance, `${JSON.stringify({
-    pid: process.pid,
-    expires_at: Date.now() + 120_000,
-  })}\n`, { mode: 0o600 });
-  try {
-    return await operation();
-  } finally {
-    try {
-      fs.unlinkSync(paths.desktopMaintenance);
-    } catch {}
-  }
 }
 
 async function configureCodex(config) {
@@ -214,25 +183,26 @@ async function restartCodexWithRepair(config) {
   });
 }
 
-async function install(config, { refresh = true } = {}) {
+function activationDependencies() {
+  return {
+    installService: () => installService(paths, { cliPath, nodePath: process.execPath }),
+    restartService: () => restartService(paths),
+    waitForHealth: (config) => waitForHealth(config, 20_000, packageInfo.version),
+    syncSkills: () => syncBundledSkills(paths, { packageRoot }),
+    restartCodex: (config) => restartCodexWithRepair(config),
+    configureCodex: (config) => configureCodex(config),
+  };
+}
+
+async function activate(config) {
+  return activateInstallation(paths, config, activationDependencies());
+}
+
+async function install(config) {
   if (!isConfigured(config)) {
     throw new Error("尚未配置中转。请先运行 `9codex init`");
   }
-  if (refresh) await refreshCatalog(config);
-  await installService(paths, { cliPath, nodePath: process.execPath });
-  return withDesktopMaintenance(async () => {
-    await restartService(paths);
-    const ready = await waitForHealth(config, 20_000, packageInfo.version);
-    if (!ready) throw new Error("9codex service did not become healthy");
-    let codex;
-    try {
-      codex = await restartCodexWithRepair(config);
-    } catch (error) {
-      await configureCodex(config);
-      codex = { codex_restarted: false, error: error.message };
-    }
-    return { health: ready, codex };
-  });
+  return reconcileAndActivateInstallation(paths, config, activationDependencies());
 }
 
 const [command = "status", ...args] = process.argv.slice(2);
@@ -240,28 +210,36 @@ const [command = "status", ...args] = process.argv.slice(2);
 try {
   switch (command) {
     case "init": {
-      let config = ensureConfig();
+      let config = loadCandidateConfig();
       const controlPlaneUrl = args[0] || process.env.NINECODEX_API_URL || config.control_plane.base_url;
       if (controlPlaneUrl) {
-        config = await runInitFlow(paths, controlPlaneUrl, { version: packageInfo.version });
+        config = await runInitFlow(paths, controlPlaneUrl, {
+          version: packageInfo.version,
+          config,
+        });
       } else {
         config = await runLocalInit(config);
       }
-      const result = await install(config, { refresh: false });
+      const result = await activate(config);
       console.log(JSON.stringify({ initialized: true, authorized: Boolean(controlPlaneUrl), ...result }, null, 2));
       break;
     }
     case "install": {
-      const result = await install(ensureConfig());
+      const result = await install(loadConfig(paths));
       console.log(JSON.stringify({ installed: true, ...result }, null, 2));
       break;
     }
+    case "skills-sync":
+      console.log(JSON.stringify({
+        skills: syncBundledSkills(paths, { packageRoot }),
+      }, null, 2));
+      break;
     case "sync": {
-      console.log(JSON.stringify(await syncModels(ensureConfig()), null, 2));
+      console.log(JSON.stringify(await syncModels(loadCandidateConfig()), null, 2));
       break;
     }
     case "status": {
-      const config = ensureConfig();
+      const config = loadConfig(paths);
       const result = await health(config);
       console.log(JSON.stringify({
         version: packageInfo.version,
@@ -280,14 +258,25 @@ try {
       break;
     case "codex-restart": {
       const cfg = loadConfig(paths);
+      try {
+        validateModelState(paths, cfg);
+      } catch {
+        const result = await install(cfg);
+        console.log(JSON.stringify({
+          ...result.codex,
+          model_state_self_healed: true,
+          service_self_healed: true,
+        }, null, 2));
+        break;
+      }
       const current = await health(cfg);
       if (!current?.ok || current.version !== packageInfo.version) {
-        const result = await install(cfg, { refresh: false });
+        const result = await activate(cfg);
         console.log(JSON.stringify({ ...result.codex, service_self_healed: true }, null, 2));
         break;
       }
       console.log(JSON.stringify(
-        await withDesktopMaintenance(() => restartCodexWithRepair(cfg)),
+        await restartCodexWithRepair(cfg),
         null,
         2,
       ));
@@ -297,20 +286,21 @@ try {
       process.stdout.write(`${loadConfig(paths).local.token}\n`);
       break;
     case "models": {
-      let config = await refreshCatalog(ensureConfig());
+      const current = loadConfig(paths);
       const [action = "list", ...modelIds] = args;
-      if (action === "select") {
-        config = selectEnabledModels(config, modelIds);
-        saveConfigAtomic(paths, config);
-        writeCatalog(paths, buildCatalog(config));
-        injectCodexConfig(paths, config, { nodePath: process.execPath, cliPath });
-      } else if (action === "all") {
-        config = enableAllModels(config);
-        saveConfigAtomic(paths, config);
-        writeCatalog(paths, buildCatalog(config));
-        injectCodexConfig(paths, config, { nodePath: process.execPath, cliPath });
-      } else if (action !== "list") {
+      if (!["list", "select", "all"].includes(action)) {
         throw new Error("Commands: models list, models select <model...>, models all");
+      }
+      const reconciled = await reconcileModelState(paths, current, {
+        prepareCandidate: action === "select"
+          ? (candidate) => selectEnabledModels(candidate, modelIds)
+          : action === "all"
+            ? (candidate) => enableAllModels(candidate)
+            : undefined,
+      });
+      const config = reconciled.config;
+      if (action !== "list") {
+        injectCodexConfig(paths, config, { nodePath: process.execPath, cliPath });
       }
       const selected = Array.isArray(config.models.enabled_ids)
         ? new Set(config.models.enabled_ids)
@@ -333,11 +323,48 @@ try {
         registry: config.updates.npm_registry,
       }, {
         currentVersion: packageInfo.version,
+        packageRoot,
         policy: config.updates,
-        activate: () => runInstalledCli("install"),
-        health: async () => Boolean(await waitForHealth(loadConfig(paths))),
+        activate: (installation) => runInstalledCli(installation, "install"),
+        health: async (version) => Boolean(await waitForHealth(loadConfig(paths), 20_000, version)),
       });
       console.log(JSON.stringify(result, null, 2));
+      break;
+    }
+    case "update-worker": {
+      const [target, token] = args;
+      if (!ownsUpdateLock(paths, token, target)) {
+        throw new Error("Automatic update lock is missing or invalid");
+      }
+      try {
+        const config = loadConfig(paths);
+        const pending = readPendingUpdate(paths);
+        if (
+          pending?.version !== target
+          || pending.channel !== config.updates.channel
+          || pending.registry !== config.updates.npm_registry
+        ) {
+          throw new Error("Pending automatic update no longer matches local policy");
+        }
+        await waitForCodexIdle(paths);
+        const result = await runStagedUpdate({
+          package: "@hooliy/9codex",
+          version: target,
+          channel: pending.channel,
+          registry: pending.registry,
+        }, {
+          currentVersion: packageInfo.version,
+          packageRoot,
+          policy: config.updates,
+          beforeActivate: () => waitForCodexIdle(paths),
+          activate: (installation) => runInstalledCli(installation, "install"),
+          health: async (version) => Boolean(await waitForHealth(loadConfig(paths), 20_000, version)),
+        });
+        try { fs.unlinkSync(paths.pendingUpdate); } catch {}
+        console.log(JSON.stringify(result, null, 2));
+      } finally {
+        releaseUpdateLock(paths, token);
+      }
       break;
     }
     case "version":
@@ -353,15 +380,16 @@ try {
         version: packageInfo.version,
         nodePath: process.execPath,
         cliPath,
-        restartCodex: () => withDesktopMaintenance(() => restartCodexWithRepair(loadConfig(paths))),
+        restartCodex: () => restartCodexWithRepair(loadConfig(paths)),
         onError: (error) => console.error(`9codex daemon: ${error.message}`),
         updatePackage: async (request) => {
           const active = loadConfig(paths);
           return runStagedUpdate(request, {
             currentVersion: packageInfo.version,
+            packageRoot,
             policy: active.updates,
-            activate: () => runInstalledCli("install"),
-            health: async () => Boolean(await waitForHealth(loadConfig(paths))),
+            activate: (installation) => runInstalledCli(installation, "install"),
+            health: async (version) => Boolean(await waitForHealth(loadConfig(paths), 20_000, version)),
           });
         },
       });
@@ -373,7 +401,7 @@ try {
       });
       break;
     default:
-      throw new Error("Commands: init, sync, install, status, models, restart, codex-restart, auth-token, update, version, uninstall");
+      throw new Error("Commands: init, sync, skills-sync, install, status, models, restart, codex-restart, auth-token, update, version, uninstall");
   }
 } catch (error) {
   console.error(`9codex error: ${error.message}`);

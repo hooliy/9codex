@@ -6,7 +6,8 @@ import path from "node:path";
 import test from "node:test";
 
 import { runInitFlow } from "../lib/init-flow.mjs";
-import { defaultConfig, saveConfigAtomic } from "../lib/config.mjs";
+import { defaultConfig } from "../lib/config.mjs";
+import { validateModelState } from "../lib/model-state.mjs";
 import { resolvePaths } from "../lib/paths.mjs";
 
 test("opens the login page, exchanges the callback, and saves the authorized bootstrap", async (t) => {
@@ -42,7 +43,7 @@ test("opens the login page, exchanges the callback, and saves the authorized boo
           default_model: "model-init",
           image_model: "image-init",
         },
-        models: [],
+        models: [{ id: "model-init", context_window: 1_050_000 }],
         updates: { channel: "stable", npm_package: "@hooliy/9codex", npm_registry: "https://registry.npmjs.org" },
         commands: { events_url: "/v1/agent/events", heartbeat_interval_seconds: 60 },
       }));
@@ -61,7 +62,6 @@ test("opens the login page, exchanges the callback, and saves the authorized boo
     default_model: "fallback-model",
     image_model: "fallback-image",
   };
-  saveConfigAtomic(paths, config);
   let openedUrl;
   const callback = {
     redirectUri: "http://127.0.0.1:24567/callback",
@@ -75,6 +75,7 @@ test("opens the login page, exchanges the callback, and saves the authorized boo
     state: "state_init",
     startCallbackServer: async () => callback,
     openBrowser: async (url) => { openedUrl = url; },
+    config,
   });
 
   assert.equal(openedUrl, "https://login.example/authorize/req_init");
@@ -83,4 +84,5 @@ test("opens the login page, exchanges the callback, and saves the authorized boo
   assert.equal(result.control_plane.authorization_id, "auth_init");
   assert.equal(result.control_plane.refresh_token, "refresh_init");
   assert.equal(result.upstream.default_model, "model-init");
+  assert.equal(validateModelState(paths, result), true);
 });

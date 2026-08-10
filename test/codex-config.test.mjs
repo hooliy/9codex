@@ -32,6 +32,7 @@ test("injects 9codex while preserving every unrelated Codex setting", () => {
     "model_provider = \"old-provider\"",
     "approval_policy = \"on-request\"",
     "preferred_auth_method = \"chatgpt\"",
+    "language = \"zh-CN\"",
     "",
     "[features]",
     "multi_agent = true",
@@ -49,7 +50,7 @@ test("injects 9codex while preserving every unrelated Codex setting", () => {
   const injected = fs.readFileSync(paths.codexConfig, "utf8");
 
   assert.match(injected, /# BEGIN 9codex root/);
-  assert.match(injected, /model = "9codex\/vendor-model-a"/);
+  assert.match(injected, /model = "vendor\/model-a"/);
   assert.match(injected, /model_provider = "9codex"/);
   assert.match(injected, /\[model_providers\.9codex\]/);
   assert.match(injected, /wire_api = "responses"/);
@@ -68,6 +69,7 @@ test("injects 9codex while preserving every unrelated Codex setting", () => {
   assert.match(injected, /default_tools_approval_mode = "approve"/);
   assert.match(injected, /approval_policy = "on-request"/);
   assert.match(injected, /preferred_auth_method = "chatgpt"/);
+  assert.match(injected, /language = "zh-CN"/);
   assert.match(injected, /\[features\]\nmulti_agent = true/);
   assert.match(injected, /\[mcp_servers\.example\]\ncommand = "example-server"/);
   assert.doesNotMatch(injected, /model = "old-model"/);

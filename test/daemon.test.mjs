@@ -5,13 +5,13 @@ import path from "node:path";
 import test from "node:test";
 
 import {
-  desktopMaintenanceActive,
   dispatchRemoteCommand,
-  maintainCodexModelPicker,
   parseSseCommands,
+  runDaemon,
   startGatewayServer,
   terminateStaleDaemon,
 } from "../lib/daemon.mjs";
+import { defaultConfig, saveConfigAtomic } from "../lib/config.mjs";
 import { resolvePaths } from "../lib/paths.mjs";
 
 const now = new Date("2026-08-01T08:05:00Z");
@@ -60,7 +60,7 @@ test("acknowledges lifecycle and automatically restarts Codex", async () => {
   assert.equal(result.codex_restarted, true);
 });
 
-test("refreshes configuration, rewrites catalog, acknowledges, then restarts local service", async () => {
+test("refreshes transactional configuration, acknowledges, then restarts local service", async () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "9codex-daemon-test-"));
   const paths = resolvePaths(home);
   const order = [];
@@ -74,7 +74,6 @@ test("refreshes configuration, rewrites catalog, acknowledges, then restarts loc
     now: () => now,
     ack: async (payload) => { order.push(`ack:${payload.status}`); },
     syncConfig: async () => { order.push("sync"); return { changed: true, config: { ...config, models: {} } }; },
-    writeCatalog: async () => { order.push("catalog"); },
     injectCodex: async () => { order.push("inject"); },
     restartService: async () => { order.push("restart-service"); },
   });
@@ -83,111 +82,28 @@ test("refreshes configuration, rewrites catalog, acknowledges, then restarts loc
     "ack:received",
     "ack:running",
     "sync",
-    "catalog",
     "inject",
     "ack:succeeded",
     "restart-service",
   ]);
 });
 
-test("desktop watcher restores the 9codex renderer integration after a normal Codex launch", async () => {
-  const state = { port: null, failures: 2, restarting: false };
-  let restarts = 0;
-  const result = await maintainCodexModelPicker(state, {
-    listProcesses: async () => [{ pid: 77, name: "ChatGPT.exe" }],
-    restartCodex: async () => {
-      restarts += 1;
-      return { codex_restarted: true, debug_port: 53113 };
-    },
-  });
-
-  assert.equal(restarts, 1);
-  assert.equal(result, "restarted");
-  assert.deepEqual(state, { port: 53113, failures: 0, restarting: false });
-});
-
-test("desktop watcher does not race an installer-owned Codex restart", async () => {
-  const state = { port: null, failures: 2, restarting: false };
-  let listed = 0;
-  const result = await maintainCodexModelPicker(state, {
-    maintenanceActive: async () => true,
-    listProcesses: async () => { listed += 1; return []; },
-  });
-
-  assert.equal(result, "busy");
-  assert.equal(listed, 0);
-  assert.deepEqual(state, { port: null, failures: 2, restarting: false });
-});
-
-test("expired desktop maintenance markers are removed", () => {
+test("daemon rejects invalid model state before creating a gateway", async () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "9codex-daemon-test-"));
-  const marker = path.join(home, "desktop-maintenance.json");
-  fs.writeFileSync(marker, JSON.stringify({ expires_at: 100 }));
+  const paths = resolvePaths(home);
+  const config = defaultConfig();
+  config.upstream.base_url = "https://router.example/v1";
+  config.upstream.api_key = "key";
+  saveConfigAtomic(paths, config);
+  let created = false;
 
-  assert.equal(desktopMaintenanceActive(marker, 101), false);
-  assert.equal(fs.existsSync(marker), false);
-});
-
-test("desktop watcher immediately replaces a normal launch whose processes differ from the saved debug session", async () => {
-  const state = { port: null, failures: 0, restarting: false };
-  let restarts = 0;
-  const result = await maintainCodexModelPicker(state, {
-    listProcesses: async () => [{ pid: 82, name: "ChatGPT.exe" }],
-    loadSession: () => ({ debug_port: 53116, process_ids: [81] }),
-    enableModelPicker: async () => { throw new Error("debug endpoint is not available"); },
-    restartCodex: async () => {
-      restarts += 1;
-      return { codex_restarted: true, debug_port: 53117 };
-    },
-  });
-
-  assert.equal(restarts, 1);
-  assert.equal(result, "restarted");
-  assert.deepEqual(state, { port: 53117, failures: 0, restarting: false });
-});
-
-test("desktop watcher waits when the saved debug session still owns a starting Codex process", async () => {
-  const state = { port: null, failures: 0, restarting: false };
-  let restarts = 0;
-  const result = await maintainCodexModelPicker(state, {
-    listProcesses: async () => [{ pid: 83, name: "ChatGPT.exe" }],
-    loadSession: () => ({ debug_port: 53118, process_ids: [83] }),
-    enableModelPicker: async () => { throw new Error("renderer is still starting"); },
-    restartCodex: async () => { restarts += 1; },
-  });
-
-  assert.equal(restarts, 0);
-  assert.equal(result, "waiting");
-  assert.equal(state.failures, 1);
-});
-
-test("desktop watcher keeps a healthy in-memory integration without restarting Codex", async () => {
-  const state = { port: 53114, failures: 0, restarting: false };
-  let restarts = 0;
-  const result = await maintainCodexModelPicker(state, {
-    listProcesses: async () => [{ pid: 78, name: "ChatGPT.exe" }],
-    enableModelPicker: async ({ port }) => ({ connected: true, port }),
-    restartCodex: async () => { restarts += 1; },
-  });
-
-  assert.equal(result, "healthy");
-  assert.equal(restarts, 0);
-  assert.equal(state.failures, 0);
-});
-
-test("desktop watcher adopts a session created by the CLI instead of restarting it", async () => {
-  const state = { port: null, failures: 0, restarting: false };
-  let restarts = 0;
-  const result = await maintainCodexModelPicker(state, {
-    listProcesses: async () => [{ pid: 79, name: "ChatGPT.exe" }],
-    loadSession: () => ({ debug_port: 53115 }),
-    enableModelPicker: async ({ port }) => ({ connected: true, port }),
-    restartCodex: async () => { restarts += 1; },
-  });
-
-  assert.equal(result, "healthy");
-  assert.equal(state.port, 53115);
-  assert.equal(restarts, 0);
+  await assert.rejects(
+    () => runDaemon(paths, {
+      createGateway: () => { created = true; },
+    }),
+    /model metadata|catalog|model state/i,
+  );
+  assert.equal(created, false);
 });
 
 test("terminates a stale 9codex daemon recorded in the pid file", async () => {

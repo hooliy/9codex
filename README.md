@@ -38,6 +38,7 @@ Credentials are written to `~/.9codex/config.json` with owner-only permissions.
 9codex models list
 9codex models select <model-id...>
 9codex models all
+9codex skills-sync
 9codex install
 9codex restart
 9codex codex-restart
@@ -53,6 +54,19 @@ are discovered automatically. All discovered models are visible by default;
 
 Changing the upstream URL clears the previous model allow-list. This prevents
 models from one relay being presented while another relay is active.
+
+9codex bundles an `orchestrator` skill for non-simple tasks. The main task
+confirms requirements, splits conflict-free work across sub-agents, verifies
+files, diffs, tests, builds, and actual output itself, then loops failed work
+until every completion criterion passes or a hard external blocker is reported.
+`9codex init`, `9codex install`, manual updates, and automatic updates sync the
+bundled skill before Codex restarts. `9codex skills-sync` only syncs skills; it
+requires no upstream configuration and restarts neither 9codex nor Codex.
+
+The daemon checks npm every five minutes. A newer version remains queued while any Codex
+task or sub-agent is active, is retried every minute, then installs and restarts
+9codex and Codex only after all work is idle. Unknown activity state fails
+closed and never triggers a restart.
 
 ## Remote control plane
 
