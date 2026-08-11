@@ -246,9 +246,32 @@ try {
         configured: true,
         authorized: Boolean(config.control_plane.authorization_id),
         health: result,
+        taskboard: config.team?.enabled === false ? null : {
+          enabled: true,
+          host: config.team.host,
+          port: config.team.port,
+        },
         config: redactConfig(config),
       }, null, 2));
       process.exitCode = result?.ok ? 0 : 1;
+      break;
+    }
+    case "taskboard": {
+      const config = loadConfig(paths);
+      console.log(`http://${config.team.host}:${config.team.port}/#token=${encodeURIComponent(config.team.token)}`);
+      break;
+    }
+    case "tasks": {
+      const [action = "list", taskGroupId] = args;
+      const { openTeamStore } = await import("../lib/team-store.mjs");
+      const store = await openTeamStore(paths.teamDatabase);
+      try {
+        if (action === "list") console.log(JSON.stringify(store.listTaskGroups(), null, 2));
+        else if (action === "show" && taskGroupId) console.log(JSON.stringify(store.getTaskGroupSnapshot(taskGroupId, { includeWorkers: true }), null, 2));
+        else throw new Error("Commands: tasks list, tasks show <task-group-id>");
+      } finally {
+        store.close();
+      }
       break;
     }
     case "restart":
@@ -401,7 +424,7 @@ try {
       });
       break;
     default:
-      throw new Error("Commands: init, sync, skills-sync, install, status, models, restart, codex-restart, auth-token, update, version, uninstall");
+      throw new Error("Commands: init, sync, skills-sync, install, status, taskboard, tasks, models, restart, codex-restart, auth-token, update, version, uninstall");
   }
 } catch (error) {
   console.error(`9codex error: ${error.message}`);

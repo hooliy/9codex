@@ -1,7 +1,7 @@
 {
   "name": "@hooliy/9codex",
-  "version": "1.1.30",
-  "description": "OpenAI-compatible local model gateway for Codex Desktop",
+  "version": "2.0.0",
+  "description": "Persistent software team and OpenAI-compatible local model gateway for Codex",
   "author": "hooliy1",
   "license": "MIT",
   "repository": {
@@ -16,7 +16,9 @@
     "codex",
     "codex-desktop",
     "openai-compatible",
-    "model-gateway"
+    "model-gateway",
+    "task-orchestrator",
+    "persistent-team"
   ],
   "type": "module",
   "bin": {

@@ -61,6 +61,9 @@ test("default configuration contains no relay address or API key", () => {
 
   assert.equal(config.upstream.base_url, null);
   assert.equal(config.upstream.api_key, null);
+  assert.equal(config.team.host, "127.0.0.1");
+  assert.equal(config.team.max_workers, 3);
+  assert.match(config.team.token, /^9codex_team_[0-9a-f]{64}$/);
 });
 
 test("redacts every credential from diagnostics", () => {

@@ -1,11 +1,16 @@
 # 9codex
 
-Local OpenAI-compatible gateway for Codex Desktop.
+Persistent software team and local OpenAI-compatible gateway for Codex.
 
-9codex keeps Codex on its native Responses API, routes requests through a
-configured OpenAI-compatible upstream, and adapts compatible Chat Completions
-models when needed. It runs as a per-user local daemon and does not modify the
-Codex application bundle, native model cache, or unrelated Codex settings.
+9codex maps each user-created Codex conversation to one durable TaskGroup.
+Later messages become immutable demand events and requirement revisions.
+The background Orchestrator plans work, runs isolated Codex workers, supervises
+leases and checkpoints, independently verifies evidence, reworks failures, and
+recovers unfinished tasks after restart. The same daemon also keeps Codex on its
+native Responses API and routes models through an OpenAI-compatible upstream.
+
+9codex does not modify the Codex application bundle, native model cache,
+database, rollout history, or unrelated Codex settings.
 
 ## Requirements
 
@@ -35,6 +40,9 @@ Credentials are written to `~/.9codex/config.json` with owner-only permissions.
 9codex init [control-plane-url]
 9codex sync
 9codex status
+9codex taskboard
+9codex tasks list
+9codex tasks show <task-group-id>
 9codex models list
 9codex models select <model-id...>
 9codex models all
@@ -55,10 +63,21 @@ are discovered automatically. All discovered models are visible by default;
 Changing the upstream URL clears the previous model allow-list. This prevents
 models from one relay being presented while another relay is active.
 
-9codex bundles an `orchestrator` skill for non-simple tasks. The main task
-confirms requirements, splits conflict-free work across sub-agents, verifies
-files, diffs, tests, builds, and actual output itself, then loops failed work
-until every completion criterion passes or a hard external blocker is reported.
+9codex bundles an `orchestrator` skill for non-simple tasks. The skill submits
+the current user conversation and its later changes to the persistent local
+Orchestrator API. Internal WorkerSession records remain hidden by default.
+`9codex taskboard` prints the authenticated local Taskboard URL.
+`9codex tasks list` and `9codex tasks show` provide JSON diagnostics.
+
+The Taskboard shows task groups, requirement revisions, DAG state, running
+workers, blockers, evidence, and final reports. It refreshes every two seconds.
+The local API listens only on loopback and requires a private bearer token.
+
+Each accepted WorkItem requires evidence from a distinct Reviewer Run. Worker
+self-reports cannot close work. Failed verification returns work to rework;
+repeated identical failures become a real blocker. Up to three conflict-free
+workers run in isolated Git worktrees.
+
 `9codex init`, `9codex install`, manual updates, and automatic updates sync the
 bundled skill before Codex restarts. `9codex skills-sync` only syncs skills; it
 requires no upstream configuration and restarts neither 9codex nor Codex.
@@ -104,7 +123,26 @@ daemon.
 - Never paste API keys into issues or logs.
 - Diagnostics redact credentials.
 - The loopback gateway rejects requests without the local bearer token.
+- The loopback Taskboard API rejects requests without its separate bearer token.
+- Worker commands use argv without a shell and default to workspace-write.
+- Artifacts, evidence, checkpoints, and SQLite state use user-private paths.
+- Production and irreversible actions still require explicit user authorization.
 - Published packages exclude local archives, screenshots, logs, and configs.
+
+## Persistent team storage
+
+```text
+~/.9codex/team.sqlite
+~/.9codex/artifacts/
+~/.9codex/backups/
+```
+
+SQLite uses WAL, foreign keys, a busy timeout, versioned migrations, optimistic
+locks, one active WorkItem lease, one running Run per WorkerSession, atomic
+event/outbox writes, and migration backup restoration.
+
+Product scope and acceptance criteria:
+[`docs/persistent-team-product.md`](docs/persistent-team-product.md).
 
 ## Development
 

@@ -166,3 +166,34 @@ test("takes over the gateway port when a stale daemon still owns it", async () =
   assert.equal(server.listens, 2);
   assert.equal(fs.existsSync(paths.daemonPid), false);
 });
+
+test("daemon starts the persistent team runtime before the gateway", async () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "9codex-daemon-test-"));
+  const paths = resolvePaths(home);
+  const config = defaultConfig();
+  config.upstream.base_url = "https://router.example/v1";
+  config.upstream.api_key = "key";
+  saveConfigAtomic(paths, config);
+  const order = [];
+  const team = {
+    observeTeamEvent() {},
+    async close() { order.push("team-close"); },
+  };
+  const server = {
+    once() {},
+    listen(port, host, callback) { order.push("gateway"); callback(); },
+    close(callback) { order.push("gateway-close"); callback(); },
+  };
+  const controller = new AbortController();
+  const running = runDaemon(paths, {
+    signal: controller.signal,
+    validateModelState: () => true,
+    startTeamRuntime: async () => { order.push("team"); return team; },
+    createGateway: () => server,
+    startAutomaticUpdates: () => ({ close() {} }),
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  controller.abort();
+  await running;
+  assert.deepEqual(order, ["team", "gateway", "gateway-close", "team-close"]);
+});

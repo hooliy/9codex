@@ -10,6 +10,12 @@ function config() {
   return {
     local: { host: "127.0.0.1", port: 10101, token: "9codex_local_test" },
     upstream: { image_model: "cx/gpt-5.5-image" },
+    team: {
+      enabled: true,
+      host: "127.0.0.1",
+      port: 10102,
+      token: "9codex_team_test",
+    },
   };
 }
 
@@ -22,8 +28,69 @@ test("advertises a native image generation tool to Codex", async () => {
   });
 
   assert.equal(response.id, 1);
-  assert.deepEqual(response.result.tools.map((tool) => tool.name), ["image_gen"]);
+  assert.deepEqual(response.result.tools.map((tool) => tool.name), [
+    "image_gen",
+    "task_group_submit",
+    "task_group_status",
+    "task_group_pause",
+    "task_group_resume",
+    "task_group_cancel",
+  ]);
   assert.equal(response.result.tools[0].inputSchema.required.includes("prompt"), true);
+});
+
+test("submits immutable demand events through the authenticated team API", async () => {
+  let captured;
+  const response = await handleMcpRequest(config(), {
+    jsonrpc: "2.0",
+    id: 3,
+    method: "tools/call",
+    params: {
+      name: "task_group_submit",
+      arguments: {
+        thread_id: "thread-1",
+        source_message_id: "message-1",
+        content: "实现登录",
+        workspace: "/repo",
+      },
+    },
+  }, {
+    fetchImpl: async (url, init) => {
+      captured = { url: String(url), ...init };
+      return new Response(JSON.stringify({ task_group_id: "tg_1", created: true }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    },
+  });
+
+  assert.equal(captured.url, "http://127.0.0.1:10102/api/demands");
+  assert.equal(captured.method, "POST");
+  assert.equal(captured.headers.authorization, "Bearer 9codex_team_test");
+  assert.equal(JSON.parse(captured.body).content, "实现登录");
+  assert.match(response.result.content[0].text, /tg_1/);
+});
+
+test("reads and controls task groups without exposing the token in results", async () => {
+  const calls = [];
+  const fetchImpl = async (url, init) => {
+    calls.push([String(url), init]);
+    return new Response(JSON.stringify({ id: "tg_1", status: "paused" }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  };
+  for (const name of ["task_group_status", "task_group_pause", "task_group_resume", "task_group_cancel"]) {
+    const result = await handleMcpRequest(config(), {
+      jsonrpc: "2.0",
+      id: name,
+      method: "tools/call",
+      params: { name, arguments: { task_group_id: "tg_1", reason: "test" } },
+    }, { fetchImpl });
+    assert.doesNotMatch(JSON.stringify(result), /9codex_team_test/);
+  }
+  assert.equal(calls[0][1].method, "GET");
+  assert.equal(calls[1][1].method, "POST");
 });
 
 test("saves generated image bytes from the authenticated local gateway for desktop rendering", async () => {

@@ -1,8 +1,19 @@
 # 9codex 持久软件团队产品文档
 
-状态：评审稿
-版本：0.2
+状态：MVP 已实现
+版本：1.0
 日期：2026-08-11
+
+实现证据：
+
+- `lib/team-store.mjs`：SQLite、迁移、备份、恢复、事件、outbox、租约。
+- `lib/task-orchestrator.mjs`：需求版本、DAG、调度、监督、返工、终验。
+- `lib/codex-adapter.mjs`：官方 Codex CLI create/send/resume/read/wait/interrupt/archive。
+- `lib/workspace-manager.mjs`：write set、资源锁、worktree、commit、merge queue。
+- `lib/team-runtime.mjs`：daemon 恢复、周期调度、恢复演练、关键事件回投。
+- `lib/taskboard.mjs`：loopback Web Taskboard 和控制 API。
+- `test/persistent-team-e2e.test.mjs`：真实 Git 执行、验收、提交、合并、清理纵向闭环。
+- `npm test`：完整自动化验收。
 
 ## 1. 产品结论
 
