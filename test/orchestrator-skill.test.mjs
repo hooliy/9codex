@@ -25,6 +25,7 @@ test("skill preserves one user conversation as one TaskGroup and immutable deman
   assert.match(text, /原始消息.*不得.*摘要覆盖/s);
   assert.match(text, /同一用户会话.*复用.*thread_id.*不得.*另一任务组/s);
   assert.match(text, /内部 Worker.*不调用.*task_group_submit/s);
+  assert.match(text, /CODEX_THREAD_ID/);
 });
 
 test("skill gates risky changes on confirmation and shows impact", async () => {

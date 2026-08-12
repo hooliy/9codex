@@ -44,7 +44,11 @@ test("planner uses read-only structured Codex output and archives its session", 
     },
     async closeWorker(value) { calls.push({ closed: value.id }); },
   };
-  const planner = createTeamPlanner({ adapter, tempRoot: root, env: { HOME: "/home", SECRET: "no" } });
+  const planner = createTeamPlanner({
+    adapter,
+    tempRoot: root,
+    env: { HOME: "/home", CODEX_HOME: "/codex-home", SECRET: "no" },
+  });
   const plan = await planner({
     content: "Implement login",
     classification: { type: "new_requirement" },
@@ -55,6 +59,7 @@ test("planner uses read-only structured Codex output and archives its session", 
   assert.equal(plan.workItems[0].writeSet[0], "lib/auth.mjs");
   assert.equal(calls[0].options.sandbox, "read-only");
   assert.equal(calls[0].options.env.SECRET, undefined);
+  assert.equal(calls[0].options.env.CODEX_HOME, "/codex-home");
   assert.equal(calls[0].options.extraArgs[0], "--output-schema");
   assert.equal(fs.existsSync(calls[0].options.extraArgs[1]), false);
   assert.deepEqual(calls.at(-1), { closed: "planner" });

@@ -182,6 +182,50 @@ function item(key, writeSet, dependencies = [], extra = {}) {
   };
 }
 
+test("planner failure returns the task group to collecting for retry", async (t) => {
+  const { store, orchestrator } = await fixture(t, {
+    classifier: async () => ({ type: "bug_report", confidence: 0.9, highImpact: false }),
+    planner: async () => { throw new Error("planner unavailable"); },
+  });
+
+  await assert.rejects(
+    () => orchestrator.ingestDemand({
+      threadId: "thread-planner-failure",
+      sourceMessageId: "message-planner-failure",
+      content: "修复任务入队",
+      workspace: "/repo",
+    }),
+    /planner unavailable/,
+  );
+
+  assert.equal(store.getTaskGroupByThread("thread-planner-failure").status, "collecting");
+  assert.equal(
+    store.db.prepare("SELECT processed_at FROM demand_events WHERE source_message_id = ?")
+      .get("message-planner-failure").processed_at,
+    null,
+  );
+});
+
+test("first bug report waits for confirmation before creating work", async (t) => {
+  const { store, orchestrator } = await fixture(t, {
+    classifier: async () => ({ type: "bug_report", confidence: 0.9, highImpact: false }),
+    planner: async () => plan([item("fix", ["lib/fix.mjs"])]),
+  });
+
+  const result = await orchestrator.ingestDemand({
+    threadId: "thread-first-bug",
+    sourceMessageId: "message-first-bug",
+    content: "修复任务入队",
+    workspace: "/repo",
+  });
+
+  assert.equal(result.status, "awaiting_confirmation");
+  assert.equal(store.getTaskGroupByThread("thread-first-bug").status, "awaiting_confirmation");
+  assert.equal(store.db.prepare(
+    "SELECT COUNT(*) AS count FROM work_items WHERE task_group_id = ?",
+  ).get(result.taskGroupId).count, 0);
+});
+
 function latestWorker(store, workItemId) {
   return store.db.prepare(`
     SELECT * FROM worker_sessions WHERE work_item_id = ? AND role = 'worker'

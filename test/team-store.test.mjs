@@ -486,6 +486,7 @@ test("returns taskboard summaries and hides worker details unless requested", as
   assert.equal(summaries[0].id, taskGroup.id);
   assert.equal(summaries[0].progress, 0);
   assert.equal(summaries[0].running_workers, 0);
+  assert.equal(summaries[0].demand_count, 0);
 
   const basic = store.getTaskGroupSnapshot(taskGroup.id);
   assert.equal(basic.id, taskGroup.id);
@@ -524,4 +525,41 @@ test("resolves exactly one active origin request for MCP demand binding", async 
     eventType: "gateway.request_completed",
   });
   assert.equal(store.resolveActiveConversation(), null);
+});
+
+test("resolves an active request within an explicit thread when other threads are active", async (t) => {
+  const { store } = await fixture(t);
+  const first = store.createTaskGroup({
+    originThreadId: "thread-first",
+    title: "First",
+    workspace: "/first",
+  });
+  const second = store.createTaskGroup({
+    originThreadId: "thread-second",
+    title: "Second",
+    workspace: "/second",
+  });
+  for (const [group, requestId] of [[first, "request-first"], [second, "request-second"]]) {
+    store.recordExternalEvent({
+      taskGroupId: group.id,
+      aggregateType: "gateway",
+      aggregateId: requestId,
+      eventType: "gateway.request_started",
+      payload: { threadId: group.origin_thread_id },
+    });
+  }
+
+  assert.equal(store.resolveActiveConversation(), null);
+  assert.deepEqual(
+    {
+      ...store.resolveActiveConversation("thread-first"),
+      startedAt: undefined,
+    },
+    {
+      taskGroupId: first.id,
+      threadId: "thread-first",
+      requestId: "request-first",
+      startedAt: undefined,
+    },
+  );
 });

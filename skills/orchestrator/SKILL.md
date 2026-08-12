@@ -34,9 +34,11 @@ title               可选任务组标题
 ```
 
 通常省略 `thread_id` 和 `source_message_id`，后台从当前唯一活动的 Codex
-请求安全绑定。并发会话导致 `active_conversation_ambiguous` 时，才传入当前
-会话和请求 ID。同一用户会话始终复用同一 `thread_id`。不得为同一会话的
-新需求创建另一任务组。内部 Worker 不调用 `task_group_submit`。
+请求安全绑定。并发会话导致 `active_conversation_ambiguous` 时，从当前环境
+读取 `CODEX_THREAD_ID`，作为 `thread_id` 重试；`source_message_id` 可继续
+省略，MCP 使用稳定工具调用标识生成幂等事件 ID。同一用户会话始终复用同一
+`thread_id`。不得为同一会话的新需求创建另一任务组。内部 Worker 不调用
+`task_group_submit`。
 
 首次需求或高影响低置信度变更返回 `awaiting_confirmation` 时：
 

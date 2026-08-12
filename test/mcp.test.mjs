@@ -71,6 +71,36 @@ test("submits immutable demand events through the authenticated team API", async
   assert.match(response.result.content[0].text, /tg_1/);
 });
 
+test("derives stable demand identity from the MCP call when source identity is unavailable", async () => {
+  const bodies = [];
+  const request = {
+    jsonrpc: "2.0",
+    id: "tool-call-1",
+    method: "tools/call",
+    params: {
+      name: "task_group_submit",
+      arguments: {
+        thread_id: "thread-1",
+        content: "实现登录",
+        workspace: "/repo",
+      },
+    },
+  };
+  const fetchImpl = async (_url, init) => {
+    bodies.push(JSON.parse(init.body));
+    return new Response(JSON.stringify({ task_group_id: "tg_1" }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  };
+
+  await handleMcpRequest(config(), request, { fetchImpl });
+  await handleMcpRequest(config(), request, { fetchImpl });
+
+  assert.match(bodies[0].source_message_id, /^mcp:[a-f0-9]{64}$/);
+  assert.equal(bodies[1].source_message_id, bodies[0].source_message_id);
+});
+
 test("reads and controls task groups without exposing the token in results", async () => {
   const calls = [];
   const fetchImpl = async (url, init) => {
@@ -91,6 +121,26 @@ test("reads and controls task groups without exposing the token in results", asy
   }
   assert.equal(calls[0][1].method, "GET");
   assert.equal(calls[1][1].method, "POST");
+});
+
+test("reports team tool failures as task group errors", async () => {
+  const result = await handleMcpRequest(config(), {
+    jsonrpc: "2.0",
+    id: 4,
+    method: "tools/call",
+    params: {
+      name: "task_group_submit",
+      arguments: { content: "实现登录", workspace: "/repo" },
+    },
+  }, {
+    fetchImpl: async () => new Response(JSON.stringify({
+      error: "active_conversation_ambiguous",
+    }), { status: 409, headers: { "content-type": "application/json" } }),
+  });
+
+  assert.equal(result.result.isError, true);
+  assert.match(result.result.content[0].text, /task group request failed/);
+  assert.doesNotMatch(result.result.content[0].text, /image generation failed/);
 });
 
 test("saves generated image bytes from the authenticated local gateway for desktop rendering", async () => {
