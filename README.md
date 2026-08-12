@@ -72,6 +72,10 @@ Orchestrator API. Internal WorkerSession records remain hidden by default.
 The Taskboard shows task groups, requirement revisions, DAG state, running
 workers, blockers, evidence, and final reports. It refreshes every two seconds.
 The local API listens only on loopback and requires a private bearer token.
+When Codex Desktop is launched by `9codex install` or `9codex codex-restart`,
+9codex dynamically adds a `任务中心` sidebar entry through the loopback Codex
+renderer debugging session. The bridge never modifies the application bundle
+and falls back to `9codex taskboard` when the renderer UI changes.
 
 Each accepted WorkItem requires evidence from a distinct Reviewer Run. Worker
 self-reports cannot close work. Failed verification returns work to rework;

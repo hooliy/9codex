@@ -104,6 +104,48 @@ test("runtime observes only origin threads and stores sanitized gateway events",
   assert.equal(recorded[0].payload.input, undefined);
 });
 
+test("runtime syncs the task center bridge through the saved Codex debug port", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "9codex-runtime-bridge-"));
+  const desktopSession = path.join(root, "desktop-session.json");
+  fs.writeFileSync(desktopSession, JSON.stringify({ debug_port: 53111 }));
+  const calls = [];
+  const runtime = new TeamRuntime({
+    config: { team: { host: "127.0.0.1", port: 10102, token: "taskboard-token" } },
+    paths: { desktopSession },
+    store: {
+      listTaskGroups: () => [{
+        id: "tg_1",
+        status: "executing",
+        demand_count: 1,
+        progress: 50,
+        current_stage: "executing",
+        running_workers: 1,
+        blocker_count: 0,
+      }],
+      getTaskGroupSnapshot: () => ({
+        demand_events: [],
+        requirement_revisions: [],
+        work_items: [],
+        evidence: [],
+        acceptances: [],
+      }),
+    },
+    taskCenterBridgeApply: async (input) => {
+      calls.push(input);
+      return { connected: true, verified: true, tasks: input.taskGroups.length };
+    },
+    onError() {},
+  });
+
+  const result = await runtime.syncTaskCenterBridge();
+
+  assert.equal(calls[0].port, 53111);
+  assert.equal(calls[0].taskGroups[0].id, "tg_1");
+  assert.match(calls[0].taskboardUrl, /#token=taskboard-token$/);
+  assert.deepEqual(result, { connected: true, verified: true, tasks: 1 });
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
 test("runtime creates private timestamped database backups", async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "9codex-runtime-"));
   const store = await openTeamStore(path.join(root, "team.sqlite"));
