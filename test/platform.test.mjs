@@ -21,6 +21,25 @@ test("Windows process discovery parses tasklist CSV process ids", async () => {
   ]);
 });
 
+test("macOS process discovery matches the packaged executable path", async () => {
+  const calls = [];
+  const processes = await listCodexProcesses("darwin", async (file, args) => {
+    calls.push({ file, args });
+    return {
+      status: 0,
+      stdout: "76616 /Applications/ChatGPT.app/Contents/MacOS/ChatGPT\n"
+        + "76617 /Applications/ChatGPT.app/Contents/Frameworks/Codex Helper\n",
+      stderr: "",
+    };
+  });
+
+  assert.deepEqual(calls, [{
+    file: "/bin/ps",
+    args: ["-axo", "pid=,command="],
+  }]);
+  assert.deepEqual(processes, [{ pid: 76616, name: "ChatGPT" }]);
+});
+
 test("Windows restart verifies process state instead of localized taskkill output", async () => {
   const calls = [];
   let listed = 0;
@@ -133,6 +152,7 @@ test("macOS restart quits and reopens the official app", async () => {
     {
       file: "/usr/bin/open",
       args: [
+        "-n",
         "-b",
         "com.openai.codex",
         "--args",
@@ -173,6 +193,7 @@ test("macOS restart targets a process that remains after a successful graceful q
     {
       file: "/usr/bin/open",
       args: [
+        "-n",
         "-b",
         "com.openai.codex",
         "--args",
@@ -233,6 +254,7 @@ test("macOS restart falls back to a targeted kill when graceful quit is canceled
     {
       file: "/usr/bin/open",
       args: [
+        "-n",
         "-b",
         "com.openai.codex",
         "--args",
@@ -277,6 +299,48 @@ test("macOS restart retries LaunchServices while the terminated app is still unr
   );
   assert.equal(result.codex_restarted, true);
   assert.deepEqual(result.current_pids, [32]);
+});
+
+test("macOS restart force-kills a process that ignores TERM", async () => {
+  const calls = [];
+  let listed = 0;
+  const result = await restartCodex({
+    platform: "darwin",
+    debugPort: 53117,
+    applyModelPicker: async () => ({ connected: true, verified: true }),
+    forcedQuitAttempts: 2,
+    run: async (file, args) => {
+      calls.push({ file, args });
+      return { status: file === "/usr/bin/osascript" ? 1 : 0, stdout: "", stderr: "" };
+    },
+    listProcesses: async () => {
+      listed += 1;
+      if (listed <= 4) return [{ pid: 41 }];
+      return [{ pid: 42 }];
+    },
+    wait: async () => {},
+  });
+
+  assert.deepEqual(calls.slice(0, 4), [
+    {
+      file: "/usr/bin/osascript",
+      args: ["-e", "tell application id \"com.openai.codex\" to quit"],
+    },
+    { file: "/usr/bin/pkill", args: ["-x", "ChatGPT"] },
+    { file: "/bin/kill", args: ["-9", "41"] },
+    {
+      file: "/usr/bin/open",
+      args: [
+        "-n",
+        "-b",
+        "com.openai.codex",
+        "--args",
+        "--remote-debugging-address=127.0.0.1",
+        "--remote-debugging-port=53117",
+      ],
+    },
+  ]);
+  assert.deepEqual(result.current_pids, [42]);
 });
 
 test("Codex restart succeeds when the model picker connection is temporarily unavailable", async () => {

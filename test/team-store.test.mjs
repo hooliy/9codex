@@ -243,6 +243,135 @@ test("rolls back domain state, event, and outbox together", async (t) => {
   assert.equal(store.db.prepare("SELECT COUNT(*) AS count FROM outbox").get().count, before.outbox);
 });
 
+test("deletes one work item lifecycle transactionally without deleting sibling work", async (t) => {
+  const { store } = await fixture(t);
+  const { group, revision, item } = graph(store);
+  const sibling = store.createWorkItem({
+    taskGroupId: group.id,
+    requirementRevisionId: revision.id,
+    parentId: item.id,
+    title: "Sibling",
+    status: "ready",
+    dependencies: [item.id],
+  });
+  const worker = store.createWorkerSession({
+    taskGroupId: group.id,
+    workItemId: item.id,
+    codexThreadId: "internal-delete-worker",
+    role: "reviewer",
+    workspace: "/repo",
+    status: "running",
+  });
+  const run = store.createRun({
+    workerSessionId: worker.id,
+    workItemId: item.id,
+    requirementRevisionId: revision.id,
+    role: "reviewer",
+    status: "running",
+  });
+  const checkpoint = store.saveCheckpoint({
+    taskGroupId: group.id,
+    workItemId: item.id,
+    workerSessionId: worker.id,
+    runId: run.id,
+    payload: { next: "delete" },
+  });
+  const evidence = store.addEvidence({
+    taskGroupId: group.id,
+    workItemId: item.id,
+    runId: run.id,
+    type: "test",
+    source: "node:test",
+  });
+  const artifact = store.addArtifact({
+    taskGroupId: group.id,
+    workItemId: item.id,
+    evidenceId: evidence.id,
+    kind: "log",
+    path: "/tmp/delete.log",
+  });
+  const acceptance = store.addAcceptance({
+    taskGroupId: group.id,
+    scope: "work_item",
+    scopeId: item.id,
+    criteria: ["deleted"],
+    result: "failed",
+    evidenceIds: [evidence.id],
+    failureReason: "pending deletion",
+    verifiedByRunId: run.id,
+  });
+  store.acquireWorkItemLease({
+    workItemId: item.id,
+    workerSessionId: worker.id,
+    expiresAt: "2099-01-01T00:00:00.000Z",
+  });
+  store.acquireResourceLock({
+    resourceKey: "delete:item",
+    taskGroupId: group.id,
+    workItemId: item.id,
+    workerSessionId: worker.id,
+    expiresAt: "2099-01-01T00:00:00.000Z",
+  });
+  const aggregateIds = [item.id, worker.id, run.id, checkpoint.id, evidence.id, acceptance.id, artifact.id];
+
+  store.db.exec(`
+    CREATE TEMP TRIGGER reject_delete BEFORE DELETE ON work_items
+    BEGIN SELECT RAISE(ABORT, 'rollback deletion'); END;
+  `);
+  assert.throws(() => store.deleteWorkItem(group.id, item.id), /rollback deletion/);
+  assert.equal(store.get("work_items", item.id).id, item.id);
+  assert.equal(store.get("worker_sessions", worker.id).id, worker.id);
+  store.db.exec("DROP TRIGGER reject_delete");
+
+  assert.equal(store.deleteWorkItem(group.id, item.id), true);
+  assert.equal(store.deleteWorkItem(group.id, item.id), false);
+  assert.equal(store.get("work_items", item.id), undefined);
+  assert.equal(store.get("worker_sessions", worker.id), undefined);
+  assert.equal(store.get("runs", run.id), undefined);
+  assert.equal(store.get("checkpoints", checkpoint.id), undefined);
+  assert.equal(store.get("evidence", evidence.id), undefined);
+  assert.equal(store.get("acceptances", acceptance.id), undefined);
+  assert.equal(store.get("artifacts", artifact.id), undefined);
+  assert.equal(store.db.prepare("SELECT COUNT(*) count FROM work_item_leases WHERE work_item_id = ?").get(item.id).count, 0);
+  assert.equal(store.db.prepare("SELECT COUNT(*) count FROM resource_locks WHERE work_item_id = ?").get(item.id).count, 0);
+  assert.equal(store.db.prepare("SELECT COUNT(*) count FROM conversation_bindings WHERE worker_session_id = ?").get(worker.id).count, 0);
+  assert.equal(store.db.prepare(
+    `SELECT COUNT(*) count FROM events WHERE aggregate_id IN (${aggregateIds.map(() => "?").join(",")})`,
+  ).get(...aggregateIds).count, 0);
+  assert.equal(store.get("work_items", sibling.id).id, sibling.id);
+  assert.equal(store.get("work_items", sibling.id).parent_id, null);
+  assert.equal(store.db.prepare(
+    "SELECT COUNT(*) count FROM work_item_dependencies WHERE work_item_id = ? OR depends_on_id = ?",
+  ).get(sibling.id, item.id).count, 0);
+});
+
+test("deletes and clears task groups with all cascaded lifecycle state", async (t) => {
+  const { store } = await fixture(t);
+  const first = graph(store);
+  const second = store.createTaskGroup({
+    originThreadId: "thread-second",
+    title: "Second",
+    workspace: "/repo",
+  });
+  store.appendDemandEvent({
+    eventKey: "thread-second:message-1",
+    taskGroupId: second.id,
+    sourceMessageId: "message-1",
+    rawContent: "Keep until clear",
+  });
+
+  assert.equal(store.deleteTaskGroup(first.group.id), true);
+  assert.equal(store.deleteTaskGroup(first.group.id), false);
+  assert.equal(store.get("task_groups", first.group.id), undefined);
+  assert.equal(store.get("task_groups", second.id).id, second.id);
+  assert.equal(store.clearTaskGroups(), 1);
+  assert.equal(store.clearTaskGroups(), 0);
+  assert.equal(store.listTaskGroups().length, 0);
+  assert.equal(store.db.prepare("SELECT COUNT(*) count FROM events").get().count, 0);
+  assert.equal(store.db.prepare("SELECT COUNT(*) count FROM outbox").get().count, 0);
+  assert.equal(store.db.prepare("SELECT COUNT(*) count FROM schema_migrations").get().count, 1);
+});
+
 test("requires independent evidence-backed acceptance before closing work or task group", async (t) => {
   const { store } = await fixture(t);
   const { group, revision, item } = graph(store);

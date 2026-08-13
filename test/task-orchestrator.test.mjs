@@ -147,6 +147,7 @@ async function fixture(t, options = {}) {
     maxConcurrency: options.maxConcurrency,
     failureThreshold: options.failureThreshold,
     heartbeatTimeoutMs: options.heartbeatTimeoutMs,
+    verificationEnv: options.verificationEnv,
     now: options.now,
   });
   t.after(() => {
@@ -307,6 +308,119 @@ test("first requirement always waits for explicit user confirmation", async (t) 
   assert.equal(store.db.prepare("SELECT COUNT(*) count FROM work_items").get().count, 1);
 });
 
+test("independent verification receives the configured executable environment", async (t) => {
+  const calls = [];
+  const { orchestrator } = await fixture(t, {
+    verificationEnv: { PATH: "/node-bin:/usr/bin" },
+    verificationRunner: async (_criteria, options) => {
+      calls.push(options);
+      return pass();
+    },
+    planner: async () => plan([item("implementation", ["lib/a.mjs"])]),
+  });
+  const demand = await ingestConfirmed(orchestrator, {
+    threadId: "verification-env",
+    sourceMessageId: "m1",
+    content: "Build it",
+    workspace: "/repo",
+  });
+  const [assignment] = await orchestrator.schedule(demand.taskGroupId);
+  await orchestrator.reportWorker({
+    workerSessionId: assignment.workerSessionId,
+    runId: assignment.runId,
+    report: { ok: true },
+  });
+  assert.equal(calls[0].env.PATH, "/node-bin:/usr/bin");
+});
+
+test("synchronous reviewer and integrator sessions start with heartbeats", async (t) => {
+  const { orchestrator, store } = await fixture(t, {
+    planner: async () => plan([item("implementation", ["lib/a.mjs"])]),
+  });
+  const demand = await ingestConfirmed(orchestrator, {
+    threadId: "reviewer-heartbeat",
+    sourceMessageId: "m1",
+    content: "Build it",
+    workspace: "/repo",
+  });
+  const [assignment] = await orchestrator.schedule(demand.taskGroupId);
+  await orchestrator.reportWorker({
+    workerSessionId: assignment.workerSessionId,
+    runId: assignment.runId,
+    report: { ok: true },
+  });
+  const sessions = store.db.prepare(`
+    SELECT role, last_heartbeat_at FROM worker_sessions
+    WHERE task_group_id = ? AND role IN ('reviewer','integrator')
+  `).all(demand.taskGroupId);
+  assert.equal(sessions.length >= 2, true);
+  assert.equal(sessions.every((row) => row.last_heartbeat_at), true);
+});
+
+test("expanded Chinese confirmation approves the pending plan", async (t) => {
+  const { orchestrator, store } = await fixture(t, {
+    planner: async () => plan([item("implementation", ["lib/a.mjs"])]),
+  });
+  await orchestrator.ingestDemand({
+    threadId: "expanded-confirmation",
+    sourceMessageId: "m1",
+    content: "Build a normal feature",
+    workspace: "/repo",
+  });
+  const confirmed = await orchestrator.ingestDemand({
+    threadId: "expanded-confirmation",
+    sourceMessageId: "m2",
+    content: "确认执行",
+    workspace: "/repo",
+  });
+  assert.equal(confirmed.confirmed, true);
+  assert.equal(store.db.prepare("SELECT COUNT(*) count FROM work_items").get().count, 1);
+});
+
+test("short Chinese approval binds to the latest pending proposal instead of creating a requirement", async (t) => {
+  const { orchestrator, store } = await fixture(t, {
+    planner: async () => plan([item("implementation", ["lib/a.mjs"])]),
+  });
+  await orchestrator.ingestDemand({
+    threadId: "short-confirmation",
+    sourceMessageId: "m1",
+    content: "Build a normal feature",
+    workspace: "/repo",
+  });
+  const confirmed = await orchestrator.ingestDemand({
+    threadId: "short-confirmation",
+    sourceMessageId: "m2",
+    content: "好",
+    workspace: "/repo",
+  });
+  assert.equal(confirmed.confirmed, true);
+  assert.equal(store.db.prepare("SELECT COUNT(*) count FROM requirements").get().count, 1);
+  assert.equal(store.db.prepare("SELECT COUNT(*) count FROM work_items").get().count, 1);
+});
+
+test("discussion does not create work and explicit immediate execution skips confirmation", async (t) => {
+  const { orchestrator, store } = await fixture(t, {
+    planner: async () => plan([item("implementation", ["lib/a.mjs"])]),
+  });
+  const discussion = await orchestrator.ingestDemand({
+    threadId: "discussion-vs-execution",
+    sourceMessageId: "m1",
+    content: "先讨论一下这个方案应该怎么设计",
+    workspace: "/repo",
+  });
+  assert.equal(discussion.discussion, true);
+  assert.equal(store.db.prepare("SELECT COUNT(*) count FROM work_items").get().count, 0);
+
+  const execution = await orchestrator.ingestDemand({
+    threadId: "discussion-vs-execution",
+    sourceMessageId: "m2",
+    content: "严重 Bug，立即修复，不要再次确认",
+    workspace: "/repo",
+  });
+  assert.equal(execution.status, "executing");
+  assert.equal(store.db.prepare("SELECT COUNT(*) count FROM work_items").get().count, 1);
+});
+
 test("creates a verifiable DAG, enforces dependencies/write sets/resource locks, isolated worktrees, and global max three workers", async (t) => {
   const { orchestrator, store, adapter, workspaceManager } = await fixture(t, {
     planner: async () => plan([
@@ -339,6 +453,32 @@ test("creates a verifiable DAG, enforces dependencies/write sets/resource locks,
   assert.equal((await orchestrator.schedule(demand.taskGroupId)).length, 0);
   const dependency = store.db.prepare(`SELECT COUNT(*) count FROM work_item_dependencies`).get().count;
   assert.equal(dependency, 1);
+});
+
+test("supports up to twenty concurrent independent workers", async (t) => {
+  const { orchestrator, store } = await fixture(t, {
+    maxConcurrency: 20,
+    planner: async () => plan(Array.from({ length: 25 }, (_, index) => (
+      item(`parallel-${index + 1}`, [`lib/parallel-${index + 1}.mjs`])
+    ))),
+  });
+  const demand = await ingestConfirmed(orchestrator, {
+    threadId: "thread-concurrency-20",
+    sourceMessageId: "m1",
+    content: "Build independent work",
+    workspace: "/repo",
+  });
+
+  const started = await orchestrator.schedule(demand.taskGroupId);
+
+  assert.equal(started.length, 20);
+  assert.equal(
+    store.db.prepare(
+      "SELECT COUNT(*) count FROM worker_sessions WHERE role='worker' AND status='running'",
+    ).get().count,
+    20,
+  );
+  assert.equal(store.listReadyWorkItems(demand.taskGroupId).length, 5);
 });
 
 test("worker report requires Reviewer and Integrator Runs, evidence, commit, merge, cleanup, and final report", async (t) => {
@@ -376,6 +516,40 @@ test("worker report requires Reviewer and Integrator Runs, evidence, commit, mer
   assert.equal(result.finalReport.finalDecision, "passed");
   assert.equal(fs.existsSync(result.finalReport.path), true);
   assert.equal(store.db.prepare("SELECT COUNT(*) count FROM artifacts WHERE kind='final_report'").get().count, 1);
+});
+
+test("read-only accepted work closes without merging a dirty target worktree", async (t) => {
+  const workspaceManager = new FakeWorkspaceManager("/tmp/worktrees");
+  workspaceManager.commitWorktree = (options) => {
+    workspaceManager.commits.push(options);
+    return { committed: false, head: "unchanged-head", changed_files: [] };
+  };
+  workspaceManager.mergeAccepted = async () => {
+    throw new Error("Target worktree is dirty: /repo");
+  };
+  const { orchestrator, store } = await fixture(t, {
+    workspaceManager,
+    planner: async () => plan([item("inspect", [])]),
+    verificationResults: [pass("review"), pass("final")],
+  });
+  const demand = await ingestConfirmed(orchestrator, {
+    threadId: "thread-read-only",
+    sourceMessageId: "m1",
+    content: "Inspect only",
+    workspace: "/repo",
+  });
+  const [assignment] = await orchestrator.schedule(demand.taskGroupId);
+
+  const result = await orchestrator.reportWorker({
+    workerSessionId: assignment.workerSessionId,
+    runId: assignment.runId,
+    report: { summary: "inspection complete", changedFiles: [] },
+  });
+
+  assert.equal(result.result, "passed");
+  assert.equal(result.integration, null);
+  assert.equal(store.get("work_items", assignment.workItemId).status, "closed");
+  assert.equal(workspaceManager.integrations.length, 0);
 });
 
 test("failed verification creates ready rework; repeated identical fingerprint blocks at threshold", async (t) => {
@@ -525,4 +699,63 @@ test("daemon restart mode immediately reclaims every persisted running worker", 
   assert.equal(store.get("worker_sessions", assignment.workerSessionId).status, "lost");
   assert.equal(recovered.started.length, 1);
   assert.notEqual(recovered.started[0].workerSessionId, assignment.workerSessionId);
+});
+
+test("deleteWorkItem stops only its worker and preserves sibling execution", async (t) => {
+  const { orchestrator, store, adapter, workspaceManager } = await fixture(t, {
+    planner: async () => plan([
+      item("delete-me", ["lib/delete-me.mjs"]),
+      item("keep-me", ["lib/keep-me.mjs"]),
+    ]),
+  });
+  const demand = await ingestConfirmed(orchestrator, {
+    threadId: "delete-one",
+    sourceMessageId: "m1",
+    content: "Run two items",
+    workspace: "/repo",
+  });
+  const assignments = await orchestrator.schedule(demand.taskGroupId);
+  const target = assignments.find((row) => row.workItemId === demand.workItems[0]);
+  const sibling = assignments.find((row) => row.workItemId === demand.workItems[1]);
+
+  assert.equal(await orchestrator.deleteWorkItem(demand.taskGroupId, target.workItemId), true);
+  assert.equal(store.get("work_items", target.workItemId), undefined);
+  assert.equal(store.get("worker_sessions", target.workerSessionId), undefined);
+  assert.equal(store.get("work_items", sibling.workItemId).status, "running");
+  assert.equal(store.get("worker_sessions", sibling.workerSessionId).status, "running");
+  assert.deepEqual(adapter.interrupted, [target.workerId]);
+  assert.deepEqual(adapter.closed, [target.workerId]);
+  assert.equal(orchestrator.runtime.has(sibling.workerSessionId), true);
+  assert.equal(workspaceManager.claims.has(sibling.workItemId), true);
+});
+
+test("deleteTaskGroup and clearTaskGroups stop scoped workers before deletion", async (t) => {
+  const { orchestrator, store, adapter } = await fixture(t, {
+    planner: async ({ content }) => plan([item(content, [`lib/${content}.mjs`])]),
+  });
+  const first = await ingestConfirmed(orchestrator, {
+    threadId: "delete-group-one",
+    sourceMessageId: "m1",
+    content: "one",
+    workspace: "/repo",
+  });
+  const second = await ingestConfirmed(orchestrator, {
+    threadId: "delete-group-two",
+    sourceMessageId: "m1",
+    content: "two",
+    workspace: "/repo",
+  });
+  const [firstWorker] = await orchestrator.schedule(first.taskGroupId);
+  const [secondWorker] = await orchestrator.schedule(second.taskGroupId);
+
+  assert.equal(await orchestrator.deleteTaskGroup(first.taskGroupId), true);
+  assert.equal(store.get("task_groups", first.taskGroupId), undefined);
+  assert.equal(store.get("task_groups", second.taskGroupId).id, second.taskGroupId);
+  assert.deepEqual(adapter.closed, [firstWorker.workerId]);
+  assert.equal(store.get("worker_sessions", secondWorker.workerSessionId).status, "running");
+
+  assert.equal(await orchestrator.clearTaskGroups(), 1);
+  assert.equal(store.listTaskGroups().length, 0);
+  assert.deepEqual(adapter.closed, [firstWorker.workerId, secondWorker.workerId]);
+  assert.equal(orchestrator.runtime.size, 0);
 });

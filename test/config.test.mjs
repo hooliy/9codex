@@ -9,6 +9,7 @@ import {
   migrateLegacyConfig,
   redactConfig,
   saveConfigAtomic,
+  validateConfig,
 } from "../lib/config.mjs";
 import { reconcileModelState } from "../lib/model-state.mjs";
 import { resolvePaths } from "../lib/paths.mjs";
@@ -64,6 +65,14 @@ test("default configuration contains no relay address or API key", () => {
   assert.equal(config.team.host, "127.0.0.1");
   assert.equal(config.team.max_workers, 3);
   assert.match(config.team.token, /^9codex_team_[0-9a-f]{64}$/);
+});
+
+test("team worker concurrency supports up to 20 workers", () => {
+  const config = defaultConfig();
+  config.team.max_workers = 20;
+  assert.equal(validateConfig(config).team.max_workers, 20);
+  config.team.max_workers = 21;
+  assert.throws(() => validateConfig(config), /integer from 1 to 20/);
 });
 
 test("redacts every credential from diagnostics", () => {

@@ -45,6 +45,40 @@ test("runtime supervises scheduled workers and records their report", async () =
   assert.equal(reports[0].report.summary, "done");
 });
 
+test("runtime renews worker heartbeats while a silent worker is running", async () => {
+  const heartbeats = [];
+  let finish;
+  const runtime = new TeamRuntime({
+    config: { team: { lease_seconds: 60 } },
+    paths: {},
+    store: { listTaskGroups: () => [{ id: "tg_1", status: "executing" }] },
+    adapter: {
+      workers: new Map([["worker_1", { lastEventAt: Date.now() }]]),
+      waitWorker: () => new Promise((resolve) => { finish = resolve; }),
+      readEvents: () => [],
+      interruptWorker() {},
+    },
+    orchestrator: {
+      heartbeatTimeoutMs: 20,
+      recover: async () => ({ started: [] }),
+      schedule: async () => [{
+        taskGroupId: "tg_1", workItemId: "wi_1", workerSessionId: "ws_1", runId: "run_1", workerId: "worker_1",
+      }],
+      heartbeat(input) { heartbeats.push(input); },
+      async reportWorker() {},
+    },
+    publishOutbox: async () => [],
+    onError: (error) => { throw error; },
+  });
+
+  await runtime.tick();
+  await new Promise((resolve) => setTimeout(resolve, 1100));
+  finish({ ok: true, code: 0 });
+  await Promise.all([...runtime.supervisions.values()]);
+
+  assert.equal(heartbeats.some((row) => row.workerSessionId === "ws_1"), true);
+});
+
 test("runtime sends non-zero worker exits directly to rework", async () => {
   const failures = [];
   const runtime = new TeamRuntime({
@@ -110,11 +144,12 @@ test("runtime syncs the task center bridge through the saved Codex debug port", 
   fs.writeFileSync(desktopSession, JSON.stringify({ debug_port: 53111 }));
   const calls = [];
   const runtime = new TeamRuntime({
-    config: { team: { host: "127.0.0.1", port: 10102, token: "taskboard-token" } },
+    config: { team: { host: "127.0.0.1", port: 10102, token: "taskboard-token", max_workers: 20 } },
     paths: { desktopSession },
     store: {
       listTaskGroups: () => [{
         id: "tg_1",
+        origin_thread_id: "thread-1",
         status: "executing",
         demand_count: 1,
         progress: 50,
@@ -132,7 +167,7 @@ test("runtime syncs the task center bridge through the saved Codex debug port", 
     },
     taskCenterBridgeApply: async (input) => {
       calls.push(input);
-      return { connected: true, verified: true, tasks: input.taskGroups.length };
+      return { connected: true, verified: true, tasks: input.taskGroups.length, actions: [] };
     },
     onError() {},
   });
@@ -140,9 +175,71 @@ test("runtime syncs the task center bridge through the saved Codex debug port", 
   const result = await runtime.syncTaskCenterBridge();
 
   assert.equal(calls[0].port, 53111);
-  assert.equal(calls[0].taskGroups[0].id, "tg_1");
+  assert.equal(calls[0].taskGroups[0].id, "global");
+  assert.equal(calls[0].taskGroups[0].max_workers, 20);
   assert.match(calls[0].taskboardUrl, /#token=taskboard-token$/);
-  assert.deepEqual(result, { connected: true, verified: true, tasks: 1 });
+  assert.deepEqual(result, { connected: true, verified: true, tasks: 1, actions: [] });
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test("runtime confirms task-center actions without renderer network access", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "9codex-runtime-confirm-"));
+  const desktopSession = path.join(root, "desktop-session.json");
+  fs.writeFileSync(desktopSession, JSON.stringify({ debug_port: 53111 }));
+  const confirmations = [];
+  const runtime = new TeamRuntime({
+    config: { team: { host: "127.0.0.1", port: 10102, token: "taskboard-token" } },
+    paths: { desktopSession },
+    store: {
+      listTaskGroups: () => [],
+      get: () => ({ id: "tg_1", status: "awaiting_confirmation" }),
+    },
+    orchestrator: {
+      async confirmDemand(input) { confirmations.push(input); },
+    },
+    taskCenterBridgeApply: async () => ({
+      connected: true,
+      verified: true,
+      tasks: 1,
+      actions: [{ type: "confirm", taskGroupId: "tg_1", eventKey: "thread:m1" }],
+    }),
+    onError() {},
+  });
+
+  await runtime.syncTaskCenterBridge();
+
+  assert.equal(confirmations[0].eventKey, "thread:m1");
+  assert.match(confirmations[0].approvalSourceMessageId, /^task-center:/);
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test("runtime repairs a Codex launch without renderer debugging after repeated bridge failures", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "9codex-runtime-repair-"));
+  const desktopSession = path.join(root, "desktop-session.json");
+  fs.writeFileSync(desktopSession, JSON.stringify({ debug_port: 53111, process_ids: [111] }));
+  const restarts = [];
+  const runtime = new TeamRuntime({
+    config: { team: { host: "127.0.0.1", port: 10102, token: "taskboard-token" } },
+    paths: { desktopSession },
+    store: {
+      listTaskGroups: () => [],
+    },
+    taskCenterBridgeApply: async () => { throw new Error("fetch failed"); },
+    listCodexProcesses: async () => [{ pid: 222 }],
+    restartCodex: async (input) => {
+      restarts.push(input);
+      return { codex_restarted: true };
+    },
+    onError() {},
+  });
+
+  await runtime.syncTaskCenterBridge();
+  await runtime.syncTaskCenterBridge();
+  await runtime.syncTaskCenterBridge();
+  await runtime.syncTaskCenterBridge();
+
+  assert.equal(restarts.length, 1);
+  assert.equal(restarts[0].sessionFile, desktopSession);
   fs.rmSync(root, { recursive: true, force: true });
 });
 

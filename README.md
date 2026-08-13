@@ -69,17 +69,20 @@ Orchestrator API. Internal WorkerSession records remain hidden by default.
 `9codex taskboard` prints the authenticated local Taskboard URL.
 `9codex tasks list` and `9codex tasks show` provide JSON diagnostics.
 
-The Taskboard shows task groups, requirement revisions, DAG state, running
-workers, blockers, evidence, and final reports. It refreshes every two seconds.
+The Taskboard shows one global queue with per-WorkItem progress, live Worker
+output, queue reasons, blockers, evidence, and final reports. It refreshes
+every two seconds.
 The local API listens only on loopback and requires a private bearer token.
 When Codex Desktop is launched by `9codex install` or `9codex codex-restart`,
-9codex dynamically adds a `任务中心` sidebar entry through the loopback Codex
-renderer debugging session. The bridge never modifies the application bundle
-and falls back to `9codex taskboard` when the renderer UI changes.
+9codex dynamically adds a permanent `任务中心` sidebar entry through the
+loopback renderer debugging session. The bridge shows the same global queue,
+Worker capacity, live activity, progress, and WorkItem detail drawer as the
+standalone Taskboard. It never modifies the application bundle and falls back
+to `9codex taskboard` when the renderer UI changes.
 
 Each accepted WorkItem requires evidence from a distinct Reviewer Run. Worker
 self-reports cannot close work. Failed verification returns work to rework;
-repeated identical failures become a real blocker. Up to three conflict-free
+repeated identical failures become a real blocker. Up to twenty conflict-free
 workers run in isolated Git worktrees.
 
 `9codex init`, `9codex install`, manual updates, and automatic updates sync the
