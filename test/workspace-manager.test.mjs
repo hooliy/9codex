@@ -116,6 +116,22 @@ test("detects tracked and untracked changes outside write_set", () => {
   );
 });
 
+test("write scope ignores explicitly generated verifier files", () => {
+  const { manager } = fixture();
+  const workspace = manager.createWorktree({
+    taskGroup: "scope",
+    workItem: "generated",
+    branch: "work/generated-scope",
+  }).worktree;
+  fs.writeFileSync(path.join(workspace, "package-lock.json"), "{}\n");
+
+  assert.doesNotThrow(() => manager.assertWriteScope({
+    worktree: workspace,
+    writeSet: [],
+    ignoredFiles: ["package-lock.json"],
+  }));
+});
+
 test("detects committed changes outside write_set", () => {
   const { manager } = fixture();
   const workspace = manager.createWorktree({
@@ -150,6 +166,25 @@ test("commits only write-set changes before integration", () => {
   assert.deepEqual(result.changed_files, ["allowed.txt"]);
   assert.equal(git(created.worktree, "status", "--short"), "");
   assert.equal(git(created.worktree, "show", "--format=", "--name-only", "HEAD"), "allowed.txt");
+});
+
+test("commit excludes explicitly ignored generated files", () => {
+  const { manager } = fixture();
+  const workspace = manager.createWorktree({
+    taskGroup: "commit",
+    workItem: "generated",
+    branch: "work/commit-generated",
+  }).worktree;
+  fs.writeFileSync(path.join(workspace, "package-lock.json"), "{}\n");
+
+  const result = manager.commitWorktree({
+    worktree: workspace,
+    writeSet: [],
+    ignoredFiles: ["package-lock.json"],
+  });
+
+  assert.equal(result.committed, false);
+  assert.deepEqual(result.changed_files, []);
 });
 
 test("merges accepted branches in dependency order without checking out main elsewhere", async () => {

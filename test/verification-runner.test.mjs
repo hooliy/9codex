@@ -21,6 +21,16 @@ test("verification runner executes argv without a shell and stores private evide
   assert.equal(fs.statSync(result.evidence[0].output_path).mode & 0o777, 0o600);
 });
 
+test("verification runner expands the safe user-id placeholder without a shell", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "9codex-verify-"));
+  const result = await runVerification([{
+    id: "uid",
+    command: [process.execPath, "-e", "process.exit(process.argv[1] === String(process.getuid()) ? 0 : 1)", "$(id -u)"],
+  }], { cwd: root, artifactDir: path.join(root, "artifacts") });
+
+  assert.equal(result.result, "passed");
+});
+
 test("verification runner redacts secrets and stops after failure", async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "9codex-verify-"));
   const result = await runVerification([

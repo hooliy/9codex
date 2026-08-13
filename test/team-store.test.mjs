@@ -186,6 +186,29 @@ test("enforces foreign keys, dependency constraints, leases, locks, and one runn
   );
 });
 
+test("ready queue includes only the task group's current revision", async (t) => {
+  const { store } = await fixture(t);
+  const { group, requirement, item: historical } = graph(store);
+  const currentRevision = store.addRequirementRevision({
+    requirementId: requirement.id,
+    sourceMessageId: "message-2",
+    normalizedRequirement: "Use only current work",
+    acceptanceCriteria: ["current passes"],
+  });
+  const current = store.createWorkItem({
+    taskGroupId: group.id,
+    requirementRevisionId: currentRevision.id,
+    title: "Current work",
+    status: "ready",
+  });
+
+  assert.deepEqual(
+    store.listReadyWorkItems(group.id).map((item) => item.id),
+    [current.id],
+  );
+  assert.equal(store.get("work_items", historical.id).status, "ready");
+});
+
 test("uses optimistic versions and commits state, event, outbox atomically", async (t) => {
   const { store } = await fixture(t);
   const { item } = graph(store);
