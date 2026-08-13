@@ -3,6 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { EventEmitter } from "node:events";
 
 import { runVerification } from "../lib/verification-runner.mjs";
 
@@ -91,4 +92,25 @@ test("verification runner rejects production and irreversible commands", async (
       (error) => error.code === "unsafe_command",
     );
   }
+});
+
+test("verification runner permits package publication dry-runs", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "9codex-verify-"));
+  const result = await runVerification([{
+    id: "package-dry-run",
+    command: ["npm", "publish", "--dry-run"],
+  }], {
+    cwd: root,
+    artifactDir: path.join(root, "artifacts"),
+    spawn: (_file, _args) => {
+      const child = new EventEmitter();
+      child.stdout = new EventEmitter();
+      child.stderr = new EventEmitter();
+      child.kill = () => {};
+      queueMicrotask(() => child.emit("close", 0, null));
+      return child;
+    },
+  });
+
+  assert.equal(result.result, "passed");
 });

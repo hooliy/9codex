@@ -61,6 +61,23 @@ test("creates, checks, restores, and safely deletes an independent worktree", ()
   assert.equal(fs.existsSync(created.worktree), false);
 });
 
+test("clean reused worktree fast-forwards to current repository HEAD", () => {
+  const { repo, manager } = fixture();
+  const options = {
+    taskGroup: "group-current",
+    workItem: "item-current",
+    branch: "work/item-current",
+  };
+  const created = manager.createWorktree(options);
+  commit(repo, "README.md", "new main\n", "advance main");
+  const mainHead = git(repo, "rev-parse", "HEAD");
+
+  const restored = manager.createWorktree(options);
+
+  assert.equal(restored.head, mainHead);
+  assert.equal(git(created.worktree, "rev-parse", "HEAD"), mainHead);
+});
+
 test("rejects overlapping write sets and write/read conflicts but allows disjoint readers", () => {
   const { manager } = fixture();
   manager.hold("writer", { write_set: ["lib/**"], read_set: ["README.md"] });
