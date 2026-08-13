@@ -4,8 +4,70 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { TeamRuntime } from "../lib/team-runtime.mjs";
+import { TeamRuntime, prepareWorkerHome, preflightWorkerNode } from "../lib/team-runtime.mjs";
 import { openTeamStore } from "../lib/team-store.mjs";
+
+test("worker home preserves PATH behind the current Node.js binary", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "9codex-worker-home-"));
+  const previousPath = process.env.PATH;
+  process.env.PATH = "/original/bin";
+  try {
+    const env = prepareWorkerHome(
+      { stateDir: root, catalog: path.join(root, "catalog.json") },
+      {
+        upstream: { default_model: "test-model" },
+        local: { host: "127.0.0.1", port: 10101, token: "token" },
+      },
+    );
+    assert.equal(env.PATH, `${path.dirname(process.execPath)}${path.delimiter}/original/bin`);
+    assert.equal(env.NODE, process.execPath);
+    assert.equal(env.NODE_EXEC_PATH, process.execPath);
+    assert.equal(preflightWorkerNode(env).ok, true);
+  } finally {
+    process.env.PATH = previousPath;
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("runtime blocks work items after one failed Worker Node.js preflight", async () => {
+  const updates = [];
+  let preflights = 0;
+  let schedules = 0;
+  const runtime = new TeamRuntime({
+    config: { team: {} },
+    store: {
+      db: {
+        prepare(sql) {
+          return {
+            run: (...args) => {
+              if (sql.includes("UPDATE work_items")) updates.push({ sql, args });
+            },
+          };
+        },
+      },
+      listTaskGroups: () => [{ id: "tg_1", status: "executing" }],
+    },
+    orchestrator: {
+      recover: async () => ({ started: [] }),
+      schedule: async () => { schedules += 1; return []; },
+    },
+    workerPreflight: () => {
+      preflights += 1;
+      return { ok: false, code: 127, signal: null, error: "node unavailable" };
+    },
+    onError() {},
+  });
+
+  await runtime.tick();
+  await runtime.tick();
+
+  assert.equal(preflights, 1);
+  assert.equal(schedules, 0);
+  assert.equal(updates.length, 1);
+  assert.match(updates[0].sql, /status = 'blocked'/);
+  assert.match(updates[0].sql, /waiting_reason = \?/);
+  assert.match(updates[0].args[0], /node unavailable/);
+});
 
 test("runtime supervises scheduled workers and records their report", async () => {
   const reports = [];
