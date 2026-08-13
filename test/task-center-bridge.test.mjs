@@ -33,11 +33,13 @@ test("task center bridge injects one global task center entry with live worker d
   assert.match(source, /全局监督/);
   assert.match(source, /Reviewer\/Integrator 验收/);
   assert.match(source, /setInterval/);
-  assert.match(source, /ninecodex-task-center-button/);
   assert.match(source, /ninecodex-session-tasks-entry/);
   assert.match(source, /ninecodex-session-task-panel/);
-  assert.match(source, /textContent\.trim\(\) === "插件"/);
   assert.match(source, /侧边聊天/);
+  assert.match(source, /rightSidebarFor/);
+  assert.match(source, /bounds\.right >= window\.innerWidth - 2/);
+  assert.doesNotMatch(source, /textContent\.trim\(\) === "插件"/);
+  assert.doesNotMatch(source, /plugin\.after\(button\)/);
   assert.match(source, /selectedWorkItemId/);
   assert.match(source, /nine-st-metrics/);
   assert.match(source, /nine-st-item-progress/);
