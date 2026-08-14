@@ -118,6 +118,19 @@ test("supports create, read, wait, send, interrupt, resume, and close", async ()
   assert.equal(worker.status, "closed");
 });
 
+test("creates a persistent thread and waits for thread.started instead of exposing adapter ids", async () => {
+  const { adapter, calls } = harness();
+  const created = adapter.createThread("Prepare task");
+
+  assert.equal(calls.length, 1);
+  calls[0].process.output('{"type":"thread.started","thread_id":"thread-visible"}\n');
+  const worker = await created;
+
+  assert.equal(worker.threadId, "thread-visible");
+  assert.equal(worker.sessionId, "thread-visible");
+  assert.deepEqual(calls[0].process.kills, ["SIGKILL"]);
+});
+
 test("resumes an arbitrary origin thread for delivery", async () => {
   const { adapter, calls } = harness();
   const worker = adapter.resumeThread("origin-thread", "Final report", { cwd: "/workspace" });

@@ -3,8 +3,14 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { DatabaseSync } from "node:sqlite";
 
-import { TeamRuntime, prepareWorkerHome, preflightWorkerNode } from "../lib/team-runtime.mjs";
+import {
+  TeamRuntime,
+  prepareWorkerHome,
+  preflightWorkerNode,
+  publishCodexThread,
+} from "../lib/team-runtime.mjs";
 import { openTeamStore } from "../lib/team-store.mjs";
 
 test("worker home preserves PATH behind the current Node.js binary", () => {
@@ -27,6 +33,35 @@ test("worker home preserves PATH behind the current Node.js binary", () => {
     process.env.PATH = previousPath;
     fs.rmSync(root, { recursive: true, force: true });
   }
+});
+
+test("worker sessions persist in the main Codex home and publish WorkItem titles", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "9codex-main-codex-home-"));
+  const codexHome = path.join(root, ".codex");
+  fs.mkdirSync(codexHome, { recursive: true });
+  const database = path.join(codexHome, "state_5.sqlite");
+  const db = new DatabaseSync(database);
+  db.exec(`
+    CREATE TABLE threads (
+      id TEXT PRIMARY KEY, title TEXT NOT NULL, name TEXT, updated_at INTEGER NOT NULL,
+      updated_at_ms INTEGER NOT NULL, recency_at INTEGER NOT NULL, recency_at_ms INTEGER NOT NULL
+    ) STRICT;
+    INSERT INTO threads VALUES ('thread-1','old',NULL,1,1000,1,1000);
+  `);
+  db.close();
+  const env = prepareWorkerHome(
+    { stateDir: path.join(root, ".9codex"), codexHome, catalog: path.join(root, "catalog.json") },
+    { upstream: { default_model: "test" }, local: { host: "127.0.0.1", port: 1, token: "t" } },
+  );
+  assert.equal(env.CODEX_HOME, codexHome);
+  publishCodexThread(codexHome, { threadId: "thread-1", title: "Work item" });
+  const read = new DatabaseSync(database);
+  assert.deepEqual({ ...read.prepare("SELECT title, name FROM threads WHERE id = 'thread-1'").get() }, {
+    title: "Work item",
+    name: "Work item",
+  });
+  read.close();
+  fs.rmSync(root, { recursive: true, force: true });
 });
 
 test("runtime blocks work items after one failed Worker Node.js preflight", async () => {
@@ -263,7 +298,7 @@ test("runtime confirms task-center actions without renderer network access", asy
       connected: true,
       verified: true,
       tasks: 1,
-      actions: [{ type: "confirm", taskGroupId: "tg_1", eventKey: "thread:m1" }],
+      actions: [{ actionId: "action-1", type: "confirm", taskGroupId: "tg_1", eventKey: "thread:m1" }],
     }),
     onError() {},
   });
@@ -272,6 +307,10 @@ test("runtime confirms task-center actions without renderer network access", asy
 
   assert.equal(confirmations[0].eventKey, "thread:m1");
   assert.match(confirmations[0].approvalSourceMessageId, /^task-center:/);
+  assert.deepEqual(runtime.taskCenterActionResults.get("action-1"), {
+    actionId: "action-1",
+    ok: true,
+  });
   fs.rmSync(root, { recursive: true, force: true });
 });
 

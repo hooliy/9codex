@@ -540,7 +540,7 @@ test("worker report requires Reviewer and Integrator Runs, evidence, commit, mer
   assert.equal(store.db.prepare("SELECT COUNT(*) count FROM runs WHERE role='integrator' AND status='passed'").get().count, 2);
   assert.equal(store.get("work_items", assignment.workItemId).status, "closed");
   assert.equal(store.get("worker_sessions", assignment.workerSessionId).status, "closed");
-  assert.equal(adapter.closed.length, 1);
+  assert.equal(adapter.closed.length, 0);
   assert.equal(store.db.prepare("SELECT COUNT(*) count FROM evidence WHERE work_item_id = ?").get(assignment.workItemId).count, 3);
   assert.equal(store.db.prepare("SELECT COUNT(*) count FROM evidence WHERE type='commit'").get().count, 1);
   assert.equal(workspaceManager.commits.length, 1);

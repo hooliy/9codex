@@ -36,8 +36,9 @@ test("task center bridge injects one global task center entry with live worker d
   assert.match(source, /ninecodex-session-tasks-entry/);
   assert.match(source, /ninecodex-session-task-panel/);
   assert.match(source, /侧边聊天/);
-  assert.match(source, /rightSidebarFor/);
-  assert.match(source, /bounds\.right >= window\.innerWidth - 2/);
+  assert.match(source, /data-app-shell-tab-strip-controller/);
+  assert.match(source, /ninecodex-task-center-tab/);
+  assert.match(source, /data-app-shell-tabs/);
   assert.doesNotMatch(source, /textContent\.trim\(\) === "插件"/);
   assert.doesNotMatch(source, /plugin\.after\(button\)/);
   assert.match(source, /selectedWorkItemId/);
@@ -53,6 +54,9 @@ test("task center bridge injects one global task center entry with live worker d
   assert.match(source, /在浏览器中打开完整任务板/);
   assert.match(source, /确认并执行/);
   assert.match(source, /state\.actions\.push/);
+  assert.match(source, /sessionStorage/);
+  assert.match(source, /actionResults/);
+  assert.match(source, /openCodexThread/);
   assert.match(source, /existing\.sync/);
   assert.match(source, /window\.__ninecodexTaskCenterBridge/);
   assert.match(source, /--color-background-surface/);
@@ -62,6 +66,7 @@ test("task center bridge injects one global task center entry with live worker d
   assert.doesNotMatch(source, /当前会话任务/);
   assert.doesNotMatch(source, /selectedThreadId/);
   assert.doesNotMatch(source, /origin_thread_id ===/);
+  assert.doesNotMatch(source, /rightSidebarFor/);
   assert.doesNotMatch(source, /document\.write|location\.reload/);
 });
 
@@ -195,6 +200,17 @@ test("task center does not present work from blocked groups as queued or running
   assert.equal(payload.counts.failed, 2);
   assert.deepEqual(payload.work_items.map((item) => item.status), ["blocked", "blocked"]);
   assert.match(payload.work_items[0].waiting_reason, /不会自动执行/);
+});
+
+test("task center moves paused historical work out of the pending lane", () => {
+  const [payload] = buildTaskCenterPayload({
+    listTaskGroups: () => [{ id: "paused", status: "paused", demand_count: 1 }],
+    getTaskGroupSnapshot: () => ({ work_items: [{ id: "wi_1", status: "ready" }] }),
+  });
+
+  assert.equal(payload.counts.pending, 0);
+  assert.equal(payload.counts.done, 1);
+  assert.equal(payload.work_items[0].status, "paused");
 });
 
 test("task center enriches queued work with dependency, owner, reason, progress, and next action", () => {
