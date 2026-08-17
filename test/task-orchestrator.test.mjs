@@ -7,21 +7,56 @@ import test from "node:test";
 import { createTaskOrchestrator, TaskOrchestrator } from "../lib/task-orchestrator.mjs";
 import { openTeamStore } from "../lib/team-store.mjs";
 
-class FakeAdapter {
-  constructor() {
+class FakeRuntime {
+  constructor(runtimeKind = "codex") {
+    this.runtime_kind = runtimeKind;
     this.created = [];
+    this.provisioned = [];
     this.closed = [];
     this.interrupted = [];
+    this.workers = new Map();
+    this.nextWorker = 1;
   }
 
   createWorker(instruction, options) {
+    const number = this.nextWorker++;
     const worker = {
-      id: `worker-${this.created.length + 1}`,
-      threadId: `internal-thread-${this.created.length + 1}`,
+      id: `worker-${number}`,
+      runtime_kind: this.runtime_kind,
+      sessionId: `${this.runtime_kind}-session-${number}`,
       instruction,
       cwd: options.cwd,
     };
     this.created.push(worker);
+    this.workers.set(worker.id, worker);
+    options.onEvent?.({
+      sequence: 1,
+      type: "session.created",
+      runtime_kind: this.runtime_kind,
+      worker_id: worker.id,
+      session_id: worker.sessionId,
+      run_id: null,
+      data: {},
+    }, worker);
+    return worker;
+  }
+
+  async createThread(instruction, options) {
+    const number = this.nextWorker++;
+    const worker = {
+      id: `provisioned-${number}`,
+      runtime_kind: this.runtime_kind,
+      sessionId: `${this.runtime_kind}-session-${number}`,
+      instruction,
+      cwd: options.cwd,
+    };
+    this.provisioned.push(worker);
+    return worker;
+  }
+
+  resumeThread(sessionId, instruction, options) {
+    const worker = this.createWorker(instruction, options);
+    worker.sessionId = sessionId;
     return worker;
   }
 
@@ -33,6 +68,11 @@ class FakeAdapter {
   async closeWorker(worker) {
     this.closed.push(worker.id);
     return { ok: true };
+  }
+
+  forgetWorker(worker) {
+    this.workers.delete(worker.id);
+    return true;
   }
 }
 
@@ -121,7 +161,8 @@ class FakeWorkspaceManager {
 async function fixture(t, options = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "9codex-task-orchestrator-"));
   const store = await openTeamStore(path.join(dir, "team.sqlite"), options.storeOptions);
-  const adapter = options.adapter || new FakeAdapter();
+  const adapter = options.adapter || new FakeRuntime();
+  const harnessRuntime = options.harnessRuntime || new FakeRuntime("deepseek-harness");
   const workspaceManager = options.workspaceManager || new FakeWorkspaceManager(path.join(dir, "worktrees"));
   const verificationResults = [...(options.verificationResults || [{
     result: "passed",
@@ -138,7 +179,8 @@ async function fixture(t, options = {}) {
   const verificationRunner = options.verificationRunner || (async () => verificationResults.shift() || verificationResults.at(-1));
   const orchestrator = createTaskOrchestrator({
     store,
-    adapter,
+    codexRuntime: adapter,
+    harnessRuntime,
     workspaceManager,
     verificationRunner,
     artifactRoot: path.join(dir, "artifacts"),
@@ -148,25 +190,30 @@ async function fixture(t, options = {}) {
     failureThreshold: options.failureThreshold,
     heartbeatTimeoutMs: options.heartbeatTimeoutMs,
     verificationEnv: options.verificationEnv,
+    publishThread: options.publishThread,
     now: options.now,
   });
   t.after(() => {
     try { store.close(); } catch {}
     fs.rmSync(dir, { recursive: true, force: true });
   });
-  return { dir, store, adapter, workspaceManager, orchestrator };
+  return { dir, store, adapter, harnessRuntime, workspaceManager, orchestrator };
 }
 
 function plan(workItems, requirement = {}) {
   return {
-    requirement: {
+    summary: requirement.normalizedRequirement || "Build the requested feature",
+    questions: [],
+    requirements: [{
+      key: requirement.key || "requirement-1",
+      requirementId: requirement.requirementId || null,
       title: requirement.title || "Build feature",
       normalizedRequirement: requirement.normalizedRequirement || "Build the requested feature",
       acceptanceCriteria: requirement.acceptanceCriteria || [{ id: "all", command: ["node", "--test"] }],
       impactSummary: requirement.impactSummary || "planned",
-    },
-    workItems,
-    impactActions: requirement.impactActions || {},
+      impactActions: requirement.impactActions || {},
+      workItems,
+    }],
   };
 }
 
@@ -255,6 +302,12 @@ async function ingestConfirmed(orchestrator, input) {
     : result;
 }
 
+function replanReasons(store, taskGroupId) {
+  return store.listEvents(taskGroupId)
+    .filter((event) => event.event_type === "project_manager.replanned")
+    .map((event) => event.payload.reason);
+}
+
 test("exports factory/class, deduplicates DemandEvent, keeps one TaskGroup, and confirms risky low-confidence demand", async (t) => {
   assert.equal(typeof TaskOrchestrator, "function");
   const { orchestrator, store } = await fixture(t, {
@@ -269,7 +322,7 @@ test("exports factory/class, deduplicates DemandEvent, keeps one TaskGroup, and 
   };
   const waiting = await orchestrator.ingestDemand(input);
   assert.equal(waiting.status, "awaiting_confirmation");
-  assert.equal(waiting.proposedWorkItems.length, 1);
+  assert.equal(waiting.proposedRequirements[0].workItems.length, 1);
   assert.equal(store.db.prepare("SELECT COUNT(*) count FROM task_groups").get().count, 1);
   assert.equal(store.db.prepare("SELECT COUNT(*) count FROM requirement_revisions").get().count, 0);
 
@@ -292,6 +345,145 @@ test("exports factory/class, deduplicates DemandEvent, keeps one TaskGroup, and 
   assert.equal(store.db.prepare("SELECT COUNT(*) count FROM task_groups").get().count, 1);
 });
 
+test("confirmation executes the displayed proposal without replanning drift", async (t) => {
+  let plannerCalls = 0;
+  const frozen = plan([item("frozen", ["lib/frozen.mjs"])], {
+    normalizedRequirement: "已展示的需求",
+  });
+  const { orchestrator, store } = await fixture(t, {
+    planner: async () => {
+      plannerCalls += 1;
+      return plannerCalls === 1
+        ? frozen
+        : plan([item("drifted", ["lib/drifted.mjs"])], { normalizedRequirement: "漂移需求" });
+    },
+  });
+
+  const waiting = await orchestrator.ingestDemand({
+    threadId: "proposal-no-drift",
+    sourceMessageId: "m1",
+    content: "实现功能",
+    workspace: "/repo",
+  });
+  const confirmed = await orchestrator.confirmDemand({
+    eventKey: "proposal-no-drift:m1",
+    approved: true,
+  });
+
+  assert.equal(plannerCalls, 1);
+  assert.equal(waiting.proposal.requirements[0].normalizedRequirement, "已展示的需求");
+  assert.equal(waiting.proposal.requirements[0].workItems[0].key, "frozen");
+  assert.equal(confirmed.summary, frozen.summary);
+  assert.equal(
+    store.db.prepare("SELECT normalized_requirement FROM requirement_revisions").get().normalized_requirement,
+    "已展示的需求",
+  );
+  assert.equal(
+    JSON.parse(store.db.prepare("SELECT description FROM work_items").get().description).key,
+    "frozen",
+  );
+});
+
+test("one sourced demand creates multiple active requirements with auditable revisions", async (t) => {
+  const source = {
+    kind: "document",
+    reference: "/tmp/plan.docx",
+    fingerprint: "sha256:abc",
+    metadata: { page: 2 },
+  };
+  const proposal = {
+    summary: "前后端两个独立结果",
+    questions: [],
+    requirements: [
+      plan([item("frontend", ["ui/app.mjs"])], {
+        key: "frontend",
+        title: "前端",
+        normalizedRequirement: "实现前端",
+      }).requirements[0],
+      plan([item("backend", ["lib/api.mjs"])], {
+        key: "backend",
+        title: "后端",
+        normalizedRequirement: "实现后端",
+      }).requirements[0],
+    ],
+  };
+  const { orchestrator, store } = await fixture(t);
+
+  const waiting = await orchestrator.ingestDemand({
+    threadId: "multi-requirement",
+    sourceMessageId: "m1",
+    content: "读取计划并执行",
+    workspace: "/repo",
+    source,
+    proposal,
+  });
+  assert.equal(waiting.status, "awaiting_confirmation");
+  assert.deepEqual(waiting.source, source);
+  assert.equal(waiting.proposedRequirements.length, 2);
+
+  const confirmed = await orchestrator.confirmDemand({
+    eventKey: "multi-requirement:m1",
+    approved: true,
+  });
+  const eventRow = store.db.prepare("SELECT id FROM demand_events WHERE event_key = ?").get("multi-requirement:m1");
+  const event = store.get("demand_events", eventRow.id);
+  const revisions = store.db.prepare(
+    "SELECT * FROM requirement_revisions ORDER BY revision, id",
+  ).all();
+
+  assert.equal(confirmed.requirements.length, 2);
+  assert.equal(store.db.prepare("SELECT COUNT(*) count FROM demand_events").get().count, 1);
+  assert.equal(store.db.prepare("SELECT COUNT(*) count FROM requirements").get().count, 2);
+  assert.equal(revisions.length, 2);
+  assert.equal(revisions.every((revision) => revision.status === "active"), true);
+  assert.equal(store.listReadyWorkItems(confirmed.taskGroupId).length, 2);
+  assert.equal(event.source_kind, source.kind);
+  assert.equal(event.source_reference, source.reference);
+  assert.equal(event.source_fingerprint, source.fingerprint);
+  assert.deepEqual(event.source_metadata, source.metadata);
+  assert.equal(event.confirmed_at, confirmed.confirmedAt);
+  for (const revision of revisions) {
+    assert.equal(revision.source_event_id, event.id);
+    assert.equal(revision.source_kind, source.kind);
+    assert.equal(revision.source_reference, source.reference);
+    assert.equal(revision.source_fingerprint, source.fingerprint);
+    assert.equal(revision.confirmed_at, confirmed.confirmedAt);
+  }
+  assert.equal(replanReasons(store, confirmed.taskGroupId).includes("new_requirement"), true);
+});
+
+test("proposal cannot revise a requirement owned by another task group", async (t) => {
+  const { orchestrator, store } = await fixture(t, {
+    planner: async () => plan([item("first", ["lib/first.mjs"])]),
+  });
+  const first = await ingestConfirmed(orchestrator, {
+    threadId: "scope-first",
+    sourceMessageId: "m1",
+    content: "第一个项目",
+    workspace: "/repo",
+  });
+  const foreignRequirementId = first.requirements[0].requirementId;
+  const foreignProposal = plan([item("intrusion", ["lib/intrusion.mjs"])], {
+    requirementId: foreignRequirementId,
+    normalizedRequirement: "越权修改",
+  });
+  const waiting = await orchestrator.ingestDemand({
+    threadId: "scope-second",
+    sourceMessageId: "m1",
+    content: "第二个项目",
+    workspace: "/repo",
+    proposal: foreignProposal,
+  });
+
+  await assert.rejects(
+    () => orchestrator.confirmDemand({ eventKey: "scope-second:m1", approved: true }),
+    /requirement belongs to another task group/,
+  );
+  assert.equal(store.db.prepare(
+    "SELECT COUNT(*) count FROM requirement_revisions WHERE requirement_id = ?",
+  ).get(foreignRequirementId).count, 1);
+});
+
 test("first requirement always waits for explicit user confirmation", async (t) => {
   const { orchestrator, store } = await fixture(t, {
     planner: async () => plan([item("implementation", ["lib/a.mjs"])]),
@@ -306,6 +498,47 @@ test("first requirement always waits for explicit user confirmation", async (t) 
   assert.equal(store.db.prepare("SELECT COUNT(*) count FROM work_items").get().count, 0);
   await orchestrator.confirmDemand({ eventKey: "first-confirmation:m1", approved: true });
   assert.equal(store.db.prepare("SELECT COUNT(*) count FROM work_items").get().count, 1);
+});
+
+test("Harness projects persist Runtime snapshots and never publish Codex threads", async (t) => {
+  const published = [];
+  const {
+    adapter,
+    harnessRuntime,
+    orchestrator,
+    store,
+  } = await fixture(t, {
+    publishThread: async (input) => published.push(input),
+    planner: async () => plan([item("implementation", ["lib/a.mjs"])]),
+  });
+  const demand = await ingestConfirmed(orchestrator, {
+    threadId: "harness-project",
+    sourceMessageId: "m1",
+    content: "Build with Harness",
+    workspace: "/repo",
+    runtimeKind: "deepseek-harness",
+  });
+
+  const [assignment] = await orchestrator.schedule(demand.taskGroupId);
+  const group = store.get("task_groups", demand.taskGroupId);
+  const session = store.get("worker_sessions", assignment.workerSessionId);
+  const run = store.get("runs", assignment.runId);
+
+  assert.equal(group.runtime_kind, "deepseek-harness");
+  assert.equal(assignment.runtimeKind, "deepseek-harness");
+  assert.equal(adapter.provisioned.length, 0);
+  assert.equal(harnessRuntime.created.length, 1);
+  assert.equal(session.runtime_kind, "deepseek-harness");
+  assert.equal(session.runtime_session_id, harnessRuntime.created[0].sessionId);
+  assert.equal(run.runtime_kind, "deepseek-harness");
+  assert.equal(store.db.prepare(
+    "SELECT COUNT(*) count FROM conversation_bindings WHERE worker_session_id = ?",
+  ).get(session.id).count, 0);
+  assert.deepEqual(published, []);
+
+  await orchestrator.cancel(demand.taskGroupId);
+  assert.deepEqual(harnessRuntime.interrupted, [harnessRuntime.created[0].id]);
+  assert.deepEqual(adapter.interrupted, []);
 });
 
 test("independent verification receives the configured executable environment", async (t) => {
@@ -552,6 +785,7 @@ test("worker report requires Reviewer and Integrator Runs, evidence, commit, mer
   assert.equal(result.finalReport.finalDecision, "passed");
   assert.equal(fs.existsSync(result.finalReport.path), true);
   assert.equal(store.db.prepare("SELECT COUNT(*) count FROM artifacts WHERE kind='final_report'").get().count, 1);
+  assert.equal(replanReasons(store, demand.taskGroupId).includes("work_item_accepted"), true);
 });
 
 test("read-only accepted work closes without merging a dirty target worktree", async (t) => {
@@ -611,6 +845,7 @@ test("failed verification creates ready rework; repeated identical fingerprint b
   assert.equal(store.get("work_items", second.workItemId).status, "blocked");
   assert.equal(store.get("task_groups", demand.taskGroupId).status, "blocked");
   assert.equal(store.db.prepare("SELECT COUNT(*) count FROM acceptances WHERE result='failed'").get().count, 2);
+  assert.equal(replanReasons(store, demand.taskGroupId).filter((reason) => reason === "verification_failed").length, 2);
 });
 
 test("pause, resume, and cancel control the task group without user-managed internal sessions", async (t) => {
@@ -685,8 +920,10 @@ test("requirement change versions demand, interrupts old worker, and marks affec
   oldItemId = first.workItems[0];
   await orchestrator.schedule(first.taskGroupId);
 
-  const changed = await orchestrator.ingestDemand({ threadId: "thread-change", sourceMessageId: "m2", content: "Change behavior", workspace: "/repo" });
-  assert.equal(changed.revision, 2);
+  const waiting = await orchestrator.ingestDemand({ threadId: "thread-change", sourceMessageId: "m2", content: "Change behavior", workspace: "/repo" });
+  assert.equal(waiting.status, "awaiting_confirmation");
+  const changed = await orchestrator.confirmDemand({ eventKey: "thread-change:m2", approved: true });
+  assert.equal(changed.requirements[0].revision, 2);
   assert.deepEqual(changed.affectedWorkItems, [{ id: oldItemId, action: "rework" }]);
   assert.equal(store.get("work_items", oldItemId).status, "rework");
   assert.equal(adapter.interrupted.length, 1);
@@ -742,6 +979,7 @@ test("heartbeats renew leases, checkpoints persist, scope drift fails review, an
   const newHandoff = JSON.parse(adapter.created.at(-1).instruction);
   assert.equal(newHandoff.checkpoint.progressSummary, "halfway");
   assert.equal(store.db.prepare("SELECT COUNT(*) count FROM evidence").get().count > 0, true);
+  assert.equal(replanReasons(store, demand.taskGroupId).includes("worker_recovered"), true);
 });
 
 test("daemon restart mode immediately reclaims every persisted running worker", async (t) => {

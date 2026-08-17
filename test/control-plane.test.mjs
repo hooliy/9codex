@@ -216,7 +216,7 @@ test("does not replace the active config when bootstrap is malformed", async (t)
   assert.equal(fs.readFileSync(paths.config, "utf8"), before);
 });
 
-test("defaults missing bootstrap context and rejects explicit invalid values atomically", async (t) => {
+test("uses a conservative missing bootstrap context and rejects explicit invalid values atomically", async (t) => {
   let models = [];
   const fixture = await fixtureServer((req, res) => {
     res.setHeader("content-type", "application/json");
@@ -246,7 +246,7 @@ test("defaults missing bootstrap context and rejects explicit invalid values ato
 
   models = [{ id: "new-model" }];
   const synced = await syncBootstrap(paths, config);
-  assert.equal(synced.config.models.available[0].context_window, 1_050_000);
+  assert.equal(synced.config.models.available[0].context_window, 128_000);
   assert.equal(synced.config.models.source_base_url, "https://new.example/v1");
   const valid = modelStateBytes(paths);
 

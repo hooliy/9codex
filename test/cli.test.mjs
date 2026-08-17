@@ -71,8 +71,12 @@ test("skills-sync installs bundled orchestrator without configuration", () => {
 
   assert.equal(result.status, 0, result.stderr);
   assert.deepEqual(JSON.parse(result.stdout), {
-    skills: ["orchestrator"],
+    skills: ["demand-intake", "orchestrator"],
   });
+  assert.equal(
+    fs.existsSync(path.join(home, ".codex", "skills", "demand-intake", "SKILL.md")),
+    true,
+  );
   assert.equal(
     fs.existsSync(path.join(home, ".codex", "skills", "orchestrator", "SKILL.md")),
     true,

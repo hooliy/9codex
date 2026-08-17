@@ -13,15 +13,33 @@ function git(cwd, ...args) {
   return execFileSync("git", ["-C", cwd, ...args], { encoding: "utf8" }).trim();
 }
 
-class Adapter {
-  constructor() { this.workers = []; }
+class Runtime {
+  constructor(runtimeKind = "codex") {
+    this.runtime_kind = runtimeKind;
+    this.created = [];
+    this.workers = new Map();
+  }
   createWorker(instruction, { cwd }) {
-    const worker = { id: `worker-${this.workers.length + 1}`, threadId: `thread-${this.workers.length + 1}`, instruction, cwd };
-    this.workers.push(worker);
+    const number = this.created.length + 1;
+    const worker = {
+      id: `worker-${number}`,
+      sessionId: `${this.runtime_kind}-session-${number}`,
+      instruction,
+      cwd,
+    };
+    this.created.push(worker);
+    this.workers.set(worker.id, worker);
+    return worker;
+  }
+  async createThread(instruction, options) { return this.createWorker(instruction, options); }
+  resumeThread(sessionId, instruction, options) {
+    const worker = this.createWorker(instruction, options);
+    worker.sessionId = sessionId;
     return worker;
   }
   interruptWorker() { return true; }
   async closeWorker() { return { ok: true }; }
+  forgetWorker(worker) { return this.workers.delete(worker.id); }
 }
 
 test("real Git vertical loop confirms, executes, reviews, commits, integrates, cleans, and completes", async (t) => {
@@ -48,26 +66,38 @@ test("real Git vertical loop confirms, executes, reviews, commits, integrates, c
 
   const store = await openTeamStore(path.join(root, "state", "team.sqlite"));
   t.after(() => { try { store.close(); } catch {} });
-  const adapter = new Adapter();
+  const codexRuntime = new Runtime();
+  const harnessRuntime = new Runtime("deepseek-harness");
   const workspaceManager = createWorkspaceManager(repo);
   const orchestrator = createTaskOrchestrator({
     store,
-    adapter,
+    codexRuntime,
+    harnessRuntime,
     workspaceManager,
     artifactRoot: path.join(root, "state", "artifacts"),
     classifier: async () => ({ type: "new_requirement", confidence: 0.9, highImpact: false }),
     planner: async () => ({
-      requirement: {
+      summary: "Create feature.txt",
+      questions: [],
+      requirements: [{
+        key: "feature",
+        requirementId: null,
         title: "Feature",
         normalizedRequirement: "Create feature.txt",
         acceptanceCriteria: [{ id: "tests", command: ["npm", "test"] }],
-      },
-      workItems: [{
-        key: "feature",
-        title: "Create feature",
-        description: "Create feature.txt containing done",
-        writeSet: ["feature.txt"],
-        acceptanceCriteria: [{ id: "tests", command: ["npm", "test"] }],
+        impactSummary: "new feature",
+        impactActions: {},
+        workItems: [{
+          key: "feature",
+          title: "Create feature",
+          description: "Create feature.txt containing done",
+          priority: 0,
+          writeSet: ["feature.txt"],
+          readSet: [],
+          resourceLocks: [],
+          dependencies: [],
+          acceptanceCriteria: [{ id: "tests", command: ["npm", "test"] }],
+        }],
       }],
     }),
   });

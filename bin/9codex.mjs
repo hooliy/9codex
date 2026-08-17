@@ -262,13 +262,19 @@ try {
       break;
     }
     case "tasks": {
-      const [action = "list", taskGroupId] = args;
+      const [action = "list", taskGroupId, runtimeKind] = args;
       const { openTeamStore } = await import("../lib/team-store.mjs");
       const store = await openTeamStore(paths.teamDatabase);
       try {
         if (action === "list") console.log(JSON.stringify(store.listTaskGroups(), null, 2));
         else if (action === "show" && taskGroupId) console.log(JSON.stringify(store.getTaskGroupSnapshot(taskGroupId, { includeWorkers: true }), null, 2));
-        else throw new Error("Commands: tasks list, tasks show <task-group-id>");
+        else if (action === "runtime" && taskGroupId && runtimeKind) {
+          console.log(JSON.stringify(store.changeTaskGroupRuntime(taskGroupId, {
+            runtimeKind,
+            actor: "user",
+            source: "cli",
+          }), null, 2));
+        } else throw new Error("Commands: tasks list, tasks show <task-group-id>, tasks runtime <task-group-id> <codex|deepseek-harness>");
       } finally {
         store.close();
       }

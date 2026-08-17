@@ -37,10 +37,47 @@ test("advertises a native image generation tool to Codex", async () => {
     "task_group_cancel",
   ]);
   assert.equal(response.result.tools[0].inputSchema.required.includes("prompt"), true);
+  const submit = response.result.tools.find((tool) => tool.name === "task_group_submit");
+  assert.equal(submit.inputSchema.properties.source.required.includes("kind"), true);
+  assert.equal(submit.inputSchema.properties.proposal.required.includes("requirements"), true);
+  assert.equal(
+    submit.inputSchema.properties.proposal.properties.requirements.items.properties.requirementId.anyOf[1].type,
+    "null",
+  );
 });
 
 test("submits immutable demand events through the authenticated team API", async () => {
   let captured;
+  const source = {
+    kind: "document",
+    reference: "/tmp/plan.docx",
+    fingerprint: "sha256:abc",
+    metadata: { page: 2 },
+  };
+  const proposal = {
+    summary: "实现登录",
+    questions: [],
+    requirements: [{
+      key: "login",
+      requirementId: null,
+      title: "登录",
+      normalizedRequirement: "实现登录",
+      impactSummary: "新增认证",
+      acceptanceCriteria: [{ id: "tests", command: ["npm", "test"] }],
+      impactActions: {},
+      workItems: [{
+        key: "implementation",
+        title: "实现",
+        description: "实现登录",
+        priority: 0,
+        writeSet: ["lib/auth.mjs"],
+        readSet: [],
+        resourceLocks: [],
+        dependencies: [],
+        acceptanceCriteria: [{ id: "tests", command: ["npm", "test"] }],
+      }],
+    }],
+  };
   const response = await handleMcpRequest(config(), {
     jsonrpc: "2.0",
     id: 3,
@@ -52,6 +89,8 @@ test("submits immutable demand events through the authenticated team API", async
         source_message_id: "message-1",
         content: "实现登录",
         workspace: "/repo",
+        source,
+        proposal,
       },
     },
   }, {
@@ -67,7 +106,10 @@ test("submits immutable demand events through the authenticated team API", async
   assert.equal(captured.url, "http://127.0.0.1:10102/api/demands");
   assert.equal(captured.method, "POST");
   assert.equal(captured.headers.authorization, "Bearer 9codex_team_test");
-  assert.equal(JSON.parse(captured.body).content, "实现登录");
+  const body = JSON.parse(captured.body);
+  assert.equal(body.content, "实现登录");
+  assert.deepEqual(body.source, source);
+  assert.deepEqual(body.proposal, proposal);
   assert.match(response.result.content[0].text, /tg_1/);
 });
 

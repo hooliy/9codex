@@ -65,6 +65,15 @@ test("default configuration contains no relay address or API key", () => {
   assert.equal(config.team.host, "127.0.0.1");
   assert.equal(config.team.max_workers, 3);
   assert.match(config.team.token, /^9codex_team_[0-9a-f]{64}$/);
+  assert.deepEqual(config.team.harness, {
+    command: "dsh-jsonrpc-agent",
+    args: [],
+    cordis_config: null,
+    provider: "deepseek-official",
+    model: "deepseek-v4-flash",
+    max_tokens: null,
+    request_timeout_ms: 300_000,
+  });
 });
 
 test("team worker concurrency supports up to 20 workers", () => {
@@ -75,6 +84,27 @@ test("team worker concurrency supports up to 20 workers", () => {
   assert.throws(() => validateConfig(config), /integer from 1 to 20/);
 });
 
+test("legacy team config receives Harness defaults and Harness config is strict", () => {
+  const config = defaultConfig();
+  delete config.team.harness;
+  assert.equal(validateConfig(config).team.harness.command, "dsh-jsonrpc-agent");
+
+  const invalid = [
+    ["command", "", /team\.harness\.command/],
+    ["args", ["ok", 1], /team\.harness\.args/],
+    ["cordis_config", "", /team\.harness\.cordis_config/],
+    ["provider", "", /team\.harness\.provider/],
+    ["model", "", /team\.harness\.model/],
+    ["max_tokens", 0, /team\.harness\.max_tokens/],
+    ["request_timeout_ms", 0, /team\.harness\.request_timeout_ms/],
+  ];
+  for (const [key, value, pattern] of invalid) {
+    const candidate = defaultConfig();
+    candidate.team.harness[key] = value;
+    assert.throws(() => validateConfig(candidate), pattern);
+  }
+});
+
 test("redacts every credential from diagnostics", () => {
   const redacted = redactConfig({
     control_plane: {
@@ -83,14 +113,24 @@ test("redacts every credential from diagnostics", () => {
     },
     local: { token: "local-secret" },
     upstream: { api_key: "upstream-secret" },
+    runtime: {
+      env: { NINECODEX_HARNESS_API_KEY: "harness-secret" },
+    },
   });
   const text = JSON.stringify(redacted);
 
-  for (const secret of ["access-secret", "refresh-secret", "local-secret", "upstream-secret"]) {
+  for (const secret of [
+    "access-secret",
+    "refresh-secret",
+    "local-secret",
+    "upstream-secret",
+    "harness-secret",
+  ]) {
     assert.equal(text.includes(secret), false);
   }
   assert.equal(redacted.local.token, "[REDACTED]");
   assert.equal(redacted.upstream.api_key, "[REDACTED]");
+  assert.equal(redacted.runtime.env.NINECODEX_HARNESS_API_KEY, "[REDACTED]");
 });
 
 test("rejects invalid pending config without replacing active or last-good config", () => {

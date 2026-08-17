@@ -116,7 +116,7 @@ test("install rebuilds a 1.1.25 catalog from current authoritative metadata befo
   ]);
 });
 
-test("install assigns the product context window when fangan omits context_window", async () => {
+test("install assigns a conservative context window when fangan omits context_window", async () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "9codex-activation-test-"));
   const paths = resolvePaths(home);
   const config = defaultConfig();
@@ -137,14 +137,14 @@ test("install assigns the product context window when fangan omits context_windo
 
   const persisted = loadConfig(paths);
   const catalog = JSON.parse(fs.readFileSync(paths.catalog, "utf8"));
-  assert.equal(persisted.models.available[0].context_window, 1_050_000);
-  assert.equal(catalog.models[0].context_window, 1_050_000);
+  assert.equal(persisted.models.available[0].context_window, 128_000);
+  assert.equal(catalog.models[0].context_window, 128_000);
   assert.equal(catalog.models[0].effective_context_window_percent, 90);
   assert.equal(
     catalog.models[0].context_window
       * catalog.models[0].effective_context_window_percent
       / 100,
-    945_000,
+    115_200,
   );
 });
 

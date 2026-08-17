@@ -86,6 +86,17 @@ test("catalog preserves a 1.05M context window with a fixed 90 percent effective
   assert.equal(model.context_window * model.effective_context_window_percent / 100, 945_000);
 });
 
+test("catalog compresses a 372k model at 334.8k", () => {
+  const value = config();
+  value.models.available[0].context_window = 372_000;
+
+  const model = buildCatalog(value).models[0];
+
+  assert.equal(model.context_window, 372_000);
+  assert.equal(model.effective_context_window_percent, 90);
+  assert.equal(model.context_window * model.effective_context_window_percent / 100, 334_800);
+});
+
 test("catalog rejects missing or invalid context windows", () => {
   for (const contextWindow of [
     undefined,
@@ -163,6 +174,13 @@ test("catalog exposes a selectable Fast model because Codex hides service tiers 
   assert.notEqual(fast.slug, "cx/gpt-5.6-sol");
   assert.equal(result.map[fast.slug], "cx/gpt-5.6-sol");
   assert.equal(result.forcedServiceTiers[fast.slug], "priority");
+  assert.equal(fast.context_window, 1_050_000);
+  assert.equal(fast.max_context_window, 1_050_000);
+  assert.equal(
+    fast.effective_context_window_percent,
+    result.models.find((model) => model.slug === "cx/gpt-5.6-sol")
+      .effective_context_window_percent,
+  );
 });
 
 test("catalog does not advertise Fast for non-GPT models even when upstream declares priority", () => {

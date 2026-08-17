@@ -66,7 +66,7 @@ test("reconcileModelState commits one validated config/catalog/modelMap state", 
   assert.equal(validateModelState(paths, result.config), true);
 });
 
-test("reconcileModelState assigns the product context window when authoritative metadata omits it", async () => {
+test("reconcileModelState assigns a conservative window when authoritative metadata omits it", async () => {
   const { paths, config } = fixture();
   config.upstream.default_model = "fangan";
 
@@ -74,8 +74,8 @@ test("reconcileModelState assigns the product context window when authoritative 
     authoritativeModels: [{ id: "fangan" }],
   });
 
-  assert.equal(result.config.models.available[0].context_window, 1_050_000);
-  assert.equal(result.built.models[0].context_window, 1_050_000);
+  assert.equal(result.config.models.available[0].context_window, 128_000);
+  assert.equal(result.built.models[0].context_window, 128_000);
   assert.equal(result.built.models[0].effective_context_window_percent, 90);
 });
 

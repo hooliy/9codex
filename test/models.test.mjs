@@ -45,7 +45,29 @@ test("preserves explicit upstream context and output limits", async () => {
   assert.equal(Object.hasOwn(rows[1], "max_output_tokens"), false);
 });
 
-test("uses the product context window when upstream omits context_window", async () => {
+test("reads context and output limits from upstream capability metadata", async () => {
+  const rows = await refreshUpstreamModels({
+    upstream: {
+      base_url: "https://router.example/v1",
+      api_key: "secret",
+    },
+  }, {
+    fetchImpl: async () => new Response(JSON.stringify({
+      data: [{
+        id: "cx/gpt-5.6-sol",
+        capabilities: {
+          contextWindow: 372_000,
+          maxOutput: 128_000,
+        },
+      }],
+    })),
+  });
+
+  assert.equal(rows[0].context_window, 372_000);
+  assert.equal(rows[0].max_output_tokens, 128_000);
+});
+
+test("uses a conservative 128k context window when upstream omits context_window", async () => {
   const rows = await refreshUpstreamModels({
     upstream: {
       base_url: "https://router.example/v1",
@@ -59,7 +81,7 @@ test("uses the product context window when upstream omits context_window", async
     }),
   });
 
-  assert.equal(rows[0].context_window, 1_050_000);
+  assert.equal(rows[0].context_window, 128_000);
 });
 
 test("rejects explicitly invalid context limits with the model id", async () => {
@@ -93,6 +115,25 @@ test("rejects explicitly invalid context limits with the model id", async () => 
       /Invalid context_window for model "gpt-5\.6-sol": expected a positive integer/,
     );
   }
+});
+
+test("rejects invalid context limits from capability metadata", async () => {
+  await assert.rejects(
+    refreshUpstreamModels({
+      upstream: {
+        base_url: "https://router.example/v1",
+        api_key: "secret",
+      },
+    }, {
+      fetchImpl: async () => new Response(JSON.stringify({
+        data: [{
+          id: "gpt-5.6-sol",
+          capabilities: { contextWindow: 0 },
+        }],
+      })),
+    }),
+    /Invalid context_window for model "gpt-5\.6-sol": expected a positive integer/,
+  );
 });
 
 test("rejects invalid optional output limits with the model id", async () => {

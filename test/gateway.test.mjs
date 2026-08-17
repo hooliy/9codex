@@ -205,6 +205,20 @@ test("native Responses routing preserves unknown JSON while replacing model and 
     service_tier: "priority",
     input: [
       { type: "message", id: "item_9f6c2eaba8c9393522160fa0", role: "user", content: "hello" },
+      {
+        type: "reasoning",
+        id: "rs_legacy",
+        summary: [{ type: "summary_text", text: "private reasoning" }],
+        encrypted_content: "gAAA-invalid-for-the-routed-model",
+      },
+      {
+        type: "function_call",
+        call_id: "call_valid",
+        name: "read_file",
+        arguments: "{\"path\":\"README.md\"}",
+      },
+      { type: "reasoning", encrypted_content: "gAAA-also-invalid" },
+      { type: "function_call_output", call_id: "call_valid", output: "contents" },
       { type: "future_input_item", payload: { keep: true } },
       {
         type: "function_call",
@@ -248,6 +262,13 @@ test("native Responses routing preserves unknown JSON while replacing model and 
   assert.equal("service_tier" in captured.body, false);
   assert.deepEqual(captured.body.input, [
     { type: "message", role: "user", content: "hello" },
+    {
+      type: "function_call",
+      call_id: "call_valid",
+      name: "read_file",
+      arguments: "{\"path\":\"README.md\"}",
+    },
+    { type: "function_call_output", call_id: "call_valid", output: "contents" },
     { type: "future_input_item", payload: { keep: true } },
   ]);
   assert.deepEqual(captured.body.future_field, { nested: [1, 2, 3] });

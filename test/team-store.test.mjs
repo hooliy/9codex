@@ -71,8 +71,9 @@ test("creates the complete versioned SQLite schema with operational pragmas", as
   assert.equal(store.pragma("user_version").user_version, CURRENT_SCHEMA_VERSION);
   assert.deepEqual(
     store.db.prepare("SELECT version FROM schema_migrations").all().map((row) => ({ ...row })),
-    [{ version: 1 }],
+    [{ version: 1 }, { version: 2 }, { version: 3 }],
   );
+  assert.equal(store.getTaskGroupByThread("missing"), undefined);
 });
 
 test("binds one user conversation to one task group and deduplicates DemandEvent", async (t) => {
@@ -280,7 +281,7 @@ test("deletes one work item lifecycle transactionally without deleting sibling w
   const worker = store.createWorkerSession({
     taskGroupId: group.id,
     workItemId: item.id,
-    codexThreadId: "internal-delete-worker",
+    runtimeSessionId: "internal-delete-worker",
     role: "reviewer",
     workspace: "/repo",
     status: "running",
@@ -392,7 +393,7 @@ test("deletes and clears task groups with all cascaded lifecycle state", async (
   assert.equal(store.listTaskGroups().length, 0);
   assert.equal(store.db.prepare("SELECT COUNT(*) count FROM events").get().count, 0);
   assert.equal(store.db.prepare("SELECT COUNT(*) count FROM outbox").get().count, 0);
-  assert.equal(store.db.prepare("SELECT COUNT(*) count FROM schema_migrations").get().count, 1);
+  assert.equal(store.db.prepare("SELECT COUNT(*) count FROM schema_migrations").get().count, 3);
 });
 
 test("requires independent evidence-backed acceptance before closing work or task group", async (t) => {
@@ -714,4 +715,164 @@ test("resolves an active request within an explicit thread when other threads ar
       startedAt: undefined,
     },
   );
+});
+
+test("schema v3 migrates Codex session data without loss", async (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "9codex-team-v1-v2-"));
+  const dbPath = path.join(dir, "team.sqlite");
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const v1 = await openTeamStore(dbPath, { targetVersion: 1 });
+  const timestamp = "2026-08-14T00:00:00.000Z";
+  v1.db.prepare(`
+    INSERT INTO task_groups(
+      id, origin_thread_id, title, status, workspace, version, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `).run("tg-v1", "thread-v1", "Legacy", "executing", "/repo", 0, timestamp, timestamp);
+  v1.db.prepare(`
+    INSERT INTO worker_sessions(
+      id, task_group_id, codex_thread_id, role, status, workspace,
+      version, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run("ws-v1", "tg-v1", "codex-thread-v1", "worker", "running", "/repo", 0, timestamp, timestamp);
+  v1.db.prepare(`
+    INSERT INTO runs(
+      id, worker_session_id, role, status, version, started_at, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `).run("run-v1", "ws-v1", "worker", "running", 0, timestamp, timestamp, timestamp);
+  v1.close();
+
+  const v2 = await openTeamStore(dbPath);
+  t.after(() => { try { v2.close(); } catch {} });
+  const columns = v2.db.prepare("PRAGMA table_info(worker_sessions)").all().map((row) => row.name);
+  assert.equal(columns.includes("codex_thread_id"), false);
+  assert.equal(columns.includes("runtime_session_id"), true);
+  assert.deepEqual(
+    {
+      ...v2.db.prepare(`
+        SELECT runtime_kind, runtime_session_id, runtime_metadata
+        FROM worker_sessions WHERE id = 'ws-v1'
+      `).get(),
+    },
+    {
+      runtime_kind: "codex",
+      runtime_session_id: "codex-thread-v1",
+      runtime_metadata: "{}",
+    },
+  );
+  assert.equal(v2.get("task_groups", "tg-v1").runtime_kind, "codex");
+  assert.equal(v2.get("runs", "run-v1").runtime_kind, "codex");
+  assert.equal(v2.db.prepare("PRAGMA foreign_key_check").all().length, 0);
+  assert.deepEqual(
+    v2.db.prepare("SELECT version FROM schema_migrations ORDER BY version").all().map((row) => ({ ...row })),
+    [{ version: 1 }, { version: 2 }, { version: 3 }],
+  );
+});
+
+test("project runtime is strict, snapshotted, and switchable only while inactive", async (t) => {
+  const { store } = await fixture(t);
+  const codex = store.createTaskGroup({
+    originThreadId: "runtime-codex",
+    title: "Codex",
+    workspace: "/repo",
+  });
+  const harness = store.createTaskGroup({
+    originThreadId: "runtime-harness",
+    title: "Harness",
+    workspace: "/repo",
+    runtimeKind: "deepseek-harness",
+  });
+  assert.equal(codex.runtime_kind, "codex");
+  assert.equal(harness.runtime_kind, "deepseek-harness");
+  assert.throws(
+    () => store.createTaskGroup({
+      originThreadId: "runtime-invalid",
+      title: "Invalid",
+      workspace: "/repo",
+      runtimeKind: "harness",
+    }),
+    (error) => error instanceof TeamStoreError && error.code === "invalid_runtime_kind",
+  );
+
+  const codexWorker = store.createWorkerSession({
+    taskGroupId: codex.id,
+    runtimeSessionId: "shared-session",
+    role: "worker",
+    status: "idle",
+    workspace: "/repo",
+  });
+  const harnessWorker = store.createWorkerSession({
+    taskGroupId: harness.id,
+    runtimeSessionId: "shared-session",
+    role: "worker",
+    status: "idle",
+    workspace: "/repo",
+  });
+  const harnessRun = store.createRun({
+    workerSessionId: harnessWorker.id,
+    role: "worker",
+    status: "queued",
+  });
+  assert.equal(codexWorker.runtime_kind, "codex");
+  assert.equal(harnessWorker.runtime_kind, "deepseek-harness");
+  assert.equal(harnessRun.runtime_kind, "deepseek-harness");
+  assert.equal(
+    store.db.prepare("SELECT COUNT(*) count FROM conversation_bindings WHERE worker_session_id = ?")
+      .get(codexWorker.id).count,
+    1,
+  );
+  assert.equal(
+    store.db.prepare("SELECT COUNT(*) count FROM conversation_bindings WHERE worker_session_id = ?")
+      .get(harnessWorker.id).count,
+    0,
+  );
+
+  const switched = store.changeTaskGroupRuntime(codex.id, {
+    runtimeKind: "deepseek-harness",
+  });
+  assert.equal(switched.runtime_kind, "deepseek-harness");
+  assert.equal(store.get("worker_sessions", codexWorker.id).runtime_kind, "codex");
+  const executing = store.updateTaskGroupStatus(codex.id, {
+    expectedVersion: switched.version,
+    status: "executing",
+  });
+  assert.throws(
+    () => store.changeTaskGroupRuntime(codex.id, { runtimeKind: "codex" }),
+    (error) => error instanceof TeamStoreError
+      && error.code === "runtime_switch_blocked"
+      && error.taskGroupStatus === "executing",
+  );
+  store.updateTaskGroupStatus(codex.id, {
+    expectedVersion: executing.version,
+    status: "paused",
+  });
+
+  const active = store.createWorkerSession({
+    taskGroupId: codex.id,
+    role: "worker",
+    status: "creating",
+    workspace: "/repo",
+  });
+  assert.throws(
+    () => store.changeTaskGroupRuntime(codex.id, { runtimeKind: "codex" }),
+    (error) => error instanceof TeamStoreError
+      && error.code === "runtime_switch_blocked"
+      && error.activeWorkers === 1,
+  );
+  assert.equal(store.get("task_groups", codex.id).runtime_kind, "deepseek-harness");
+  store.updateWorkerSessionStatus(active.id, {
+    expectedVersion: active.version,
+    status: "idle",
+  });
+  const activeRun = store.createRun({
+    workerSessionId: active.id,
+    role: "worker",
+    status: "running",
+  });
+  assert.throws(
+    () => store.changeTaskGroupRuntime(codex.id, { runtimeKind: "codex" }),
+    (error) => error instanceof TeamStoreError
+      && error.code === "runtime_switch_blocked"
+      && error.activeRuns === 1,
+  );
+  assert.equal(store.get("runs", activeRun.id).runtime_kind, "deepseek-harness");
 });

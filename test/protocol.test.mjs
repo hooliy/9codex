@@ -25,6 +25,45 @@ test("removes invalid historical message IDs before forwarding Responses input",
   ]);
 });
 
+test("removes historical reasoning while preserving surrounding Responses input", () => {
+  const result = normalizeResponsesRequest({
+    model: "upstream-model",
+    input: [
+      { role: "user", content: "Continue" },
+      {
+        type: "reasoning",
+        id: "rs_legacy",
+        summary: [{ type: "summary_text", text: "private reasoning" }],
+        encrypted_content: "gAAA-invalid-for-the-routed-model",
+      },
+      {
+        type: "function_call",
+        call_id: "call_1",
+        name: "read_file",
+        arguments: "{\"path\":\"README.md\"}",
+      },
+      {
+        type: "reasoning",
+        encrypted_content: "gAAA-also-invalid",
+      },
+      { type: "function_call_output", call_id: "call_1", output: "contents" },
+      { role: "assistant", content: "Done" },
+    ],
+  });
+
+  assert.deepEqual(result.input, [
+    { role: "user", content: "Continue" },
+    {
+      type: "function_call",
+      call_id: "call_1",
+      name: "read_file",
+      arguments: "{\"path\":\"README.md\"}",
+    },
+    { type: "function_call_output", call_id: "call_1", output: "contents" },
+    { role: "assistant", content: "Done" },
+  ]);
+});
+
 test("converts Responses instructions, messages, tools, and tool results to Chat", () => {
   const result = responsesToChatRequest({
     model: "upstream-model",

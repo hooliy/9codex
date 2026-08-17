@@ -128,7 +128,32 @@ test("creates a persistent thread and waits for thread.started instead of exposi
 
   assert.equal(worker.threadId, "thread-visible");
   assert.equal(worker.sessionId, "thread-visible");
-  assert.deepEqual(calls[0].process.kills, ["SIGKILL"]);
+  assert.deepEqual(calls[0].process.kills, ["SIGINT"]);
+});
+
+test("force-stops thread provisioning when Codex ignores graceful interruption", async () => {
+  let hardStop;
+  let hardStopDelay;
+  const { adapter, calls } = harness();
+  adapter.setTimeout = (callback, delay) => {
+    hardStop = callback;
+    hardStopDelay = delay;
+    return { unref() {} };
+  };
+  const created = adapter.createThread("Prepare task");
+  const process = calls[0].process;
+  process.kill = (signal) => {
+    process.kills.push(signal);
+    if (signal === "SIGKILL") queueMicrotask(() => process.emit("close", null, signal));
+    return true;
+  };
+  process.output('{"type":"thread.started","thread_id":"thread-visible"}\n');
+  hardStop();
+
+  const worker = await created;
+  assert.equal(worker.threadId, "thread-visible");
+  assert.equal(hardStopDelay, 5000);
+  assert.deepEqual(process.kills, ["SIGINT", "SIGKILL"]);
 });
 
 test("resumes an arbitrary origin thread for delivery", async () => {

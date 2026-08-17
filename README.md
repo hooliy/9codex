@@ -43,6 +43,7 @@ Credentials are written to `~/.9codex/config.json` with owner-only permissions.
 9codex taskboard
 9codex tasks list
 9codex tasks show <task-group-id>
+9codex tasks runtime <task-group-id> <codex|deepseek-harness>
 9codex models list
 9codex models select <model-id...>
 9codex models all
@@ -68,6 +69,37 @@ the current user conversation and its later changes to the persistent local
 Orchestrator API. Internal WorkerSession records remain hidden by default.
 `9codex taskboard` prints the authenticated local Taskboard URL.
 `9codex tasks list` and `9codex tasks show` provide JSON diagnostics.
+`9codex tasks runtime` switches an idle project's Runtime. Active Runs or
+Workers block switching.
+
+New TaskGroups use the `codex` Runtime by default. API clients can create a
+DeepSeek Harness project by sending `"runtime_kind": "deepseek-harness"` to
+`POST /api/demands`. Supported values are `codex` and `deepseek-harness`.
+Runtime changes use `POST /api/task-groups/:id/runtime` with
+`{"runtime_kind":"codex","reason":"optional audit reason"}`.
+
+DeepSeek Harness runs outside the 9codex package. Configure its adapter under
+`team.harness` in `~/.9codex/config.json`:
+
+```json
+{
+  "team": {
+    "harness": {
+      "command": "/absolute/path/to/dsh-jsonrpc-agent",
+      "args": [],
+      "cordis_config": "/absolute/path/to/cordis.yml",
+      "provider": "custom-provider",
+      "model": "configured-model",
+      "max_tokens": 32768,
+      "request_timeout_ms": 300000
+    }
+  }
+}
+```
+
+Keep `cordis.yml`, Harness packages, session data, and provider credentials
+outside the 9codex package tree. Reference credentials through environment
+variable names in `cordis.yml`; never store API keys in the file.
 
 The Taskboard shows one global queue with per-WorkItem progress, live Worker
 output, queue reasons, blockers, evidence, and final reports. It refreshes
