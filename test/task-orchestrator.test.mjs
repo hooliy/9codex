@@ -192,6 +192,7 @@ async function fixture(t, options = {}) {
     verificationEnv: options.verificationEnv,
     publishThread: options.publishThread,
     now: options.now,
+    wait: options.wait || (async () => {}),
   });
   t.after(() => {
     try { store.close(); } catch {}
@@ -846,6 +847,200 @@ test("failed verification creates ready rework; repeated identical fingerprint b
   assert.equal(store.get("task_groups", demand.taskGroupId).status, "blocked");
   assert.equal(store.db.prepare("SELECT COUNT(*) count FROM acceptances WHERE result='failed'").get().count, 2);
   assert.equal(replanReasons(store, demand.taskGroupId).filter((reason) => reason === "verification_failed").length, 2);
+});
+
+test("worker process failure blocks automatic retry and preserves evidence", async (t) => {
+  const { orchestrator, store } = await fixture(t, {
+    planner: async () => plan([item("worker-failure", ["lib/failure.mjs"])]),
+  });
+  const demand = await ingestConfirmed(orchestrator, {
+    threadId: "worker-failure",
+    sourceMessageId: "m1",
+    content: "Run the worker",
+    workspace: "/repo",
+  });
+  const [assignment] = await orchestrator.schedule(demand.taskGroupId);
+
+  const result = await orchestrator.failWorker({
+    workerSessionId: assignment.workerSessionId,
+    runId: assignment.runId,
+    failure: { type: "worker_process", exitCode: 17, message: "auth failed" },
+  });
+
+  assert.equal(result.status, "blocked");
+  assert.equal(store.get("work_items", assignment.workItemId).status, "blocked");
+  assert.equal(store.get("runs", assignment.runId).status, "failed");
+  assert.equal(store.get("worker_sessions", assignment.workerSessionId).status, "interrupted");
+  assert.equal(store.db.prepare("SELECT COUNT(*) count FROM evidence WHERE work_item_id = ?").get(assignment.workItemId).count, 1);
+  assert.deepEqual(await orchestrator.schedule(demand.taskGroupId), []);
+});
+
+test("recoverable model-call faults rebuild from checkpoint twice then block the repeated fingerprint", async (t) => {
+  const { orchestrator, store } = await fixture(t, {
+    planner: async () => plan([item("self-heal", ["lib/self-heal.mjs"])]),
+  });
+  const demand = await ingestConfirmed(orchestrator, {
+    threadId: "self-heal",
+    sourceMessageId: "m1",
+    content: "Run the worker",
+    workspace: "/repo",
+  });
+  let [assignment] = await orchestrator.schedule(demand.taskGroupId);
+
+  for (let attempt = 1; attempt <= 2; attempt += 1) {
+    const previousSessionId = assignment.workerSessionId;
+    const recovered = await orchestrator.recoverWorker({
+      workerSessionId: assignment.workerSessionId,
+      runId: assignment.runId,
+      failure: {
+        category: "upstream_stream_stalled",
+        recoverable: true,
+        code: "MODEL_CALL_STALLED",
+        phase: "model_waiting",
+      },
+    });
+    assert.equal(recovered.status, "recovering");
+    assert.equal(recovered.attempt, attempt);
+    assert.equal(recovered.started.length, 1);
+    if (attempt === 1) {
+      assert.equal(recovered.started[0].workerSessionId, previousSessionId);
+    } else {
+      assert.notEqual(recovered.started[0].workerSessionId, previousSessionId);
+    }
+    assignment = recovered.started[0];
+  }
+
+  const blocked = await orchestrator.recoverWorker({
+    workerSessionId: assignment.workerSessionId,
+    runId: assignment.runId,
+    failure: {
+      category: "upstream_stream_stalled",
+      recoverable: true,
+      code: "MODEL_CALL_STALLED",
+      phase: "model_waiting",
+    },
+  });
+
+  assert.equal(blocked.status, "blocked");
+  assert.equal(blocked.attempt, 3);
+  assert.equal(store.get("work_items", assignment.workItemId).status, "blocked");
+  assert.equal(store.db.prepare(
+    "SELECT COUNT(*) count FROM evidence WHERE work_item_id = ? AND type = 'model_call'",
+  ).get(assignment.workItemId).count, 3);
+  assert.equal(store.db.prepare(
+    "SELECT COUNT(*) count FROM checkpoints WHERE work_item_id = ?",
+  ).get(assignment.workItemId).count >= 3, true);
+  assert.deepEqual(await orchestrator.schedule(demand.taskGroupId), []);
+});
+
+test("non-recoverable model-call faults block immediately", async (t) => {
+  const { orchestrator, store } = await fixture(t, {
+    planner: async () => plan([item("auth-failure", ["lib/auth.mjs"])]),
+  });
+  const demand = await ingestConfirmed(orchestrator, {
+    threadId: "auth-failure",
+    sourceMessageId: "m1",
+    content: "Run the worker",
+    workspace: "/repo",
+  });
+  const [assignment] = await orchestrator.schedule(demand.taskGroupId);
+
+  const result = await orchestrator.recoverWorker({
+    workerSessionId: assignment.workerSessionId,
+    runId: assignment.runId,
+    failure: {
+      category: "upstream_authentication_failed",
+      recoverable: false,
+      code: "HTTP_401",
+    },
+  });
+
+  assert.equal(result.status, "blocked");
+  assert.equal(result.attempt, 1);
+  assert.equal(store.get("work_items", assignment.workItemId).status, "blocked");
+});
+
+test("manual work-item retry creates a new worker and keeps failure history", async (t) => {
+  const { orchestrator, store } = await fixture(t, {
+    planner: async () => plan([item("manual-retry", ["lib/retry.mjs"])]),
+  });
+  const demand = await ingestConfirmed(orchestrator, {
+    threadId: "manual-retry",
+    sourceMessageId: "m1",
+    content: "Run the worker",
+    workspace: "/repo",
+  });
+  const [first] = await orchestrator.schedule(demand.taskGroupId);
+  await orchestrator.failWorker({
+    workerSessionId: first.workerSessionId,
+    runId: first.runId,
+    failure: { type: "worker_process", exitCode: 1 },
+  });
+
+  assert.deepEqual(
+    await orchestrator.retryWorkItem(demand.taskGroupId, first.workItemId),
+    { workItemId: first.workItemId, status: "ready" },
+  );
+  const [second] = await orchestrator.schedule(demand.taskGroupId);
+
+  assert.notEqual(second.workerSessionId, first.workerSessionId);
+  assert.equal(store.get("worker_sessions", first.workerSessionId).status, "interrupted");
+  assert.equal(store.get("runs", first.runId).status, "failed");
+  assert.equal(store.db.prepare("SELECT COUNT(*) count FROM evidence WHERE work_item_id = ?").get(first.workItemId).count, 1);
+  assert.equal(replanReasons(store, demand.taskGroupId).includes("user_retry_work_item"), true);
+});
+
+test("stopping one running work item checkpoints and releases its assignment", async (t) => {
+  const { orchestrator, store, adapter, workspaceManager } = await fixture(t, {
+    planner: async () => plan([item("stop-running", ["lib/stop.mjs"])]),
+  });
+  const demand = await ingestConfirmed(orchestrator, {
+    threadId: "stop-running",
+    sourceMessageId: "m1",
+    content: "Run the worker",
+    workspace: "/repo",
+  });
+  const [assignment] = await orchestrator.schedule(demand.taskGroupId);
+
+  assert.deepEqual(
+    await orchestrator.stopWorkItem(demand.taskGroupId, assignment.workItemId),
+    { workItemId: assignment.workItemId, status: "blocked" },
+  );
+
+  assert.equal(store.get("work_items", assignment.workItemId).status, "blocked");
+  assert.equal(store.get("runs", assignment.runId).status, "interrupted");
+  assert.equal(store.get("worker_sessions", assignment.workerSessionId).status, "interrupted");
+  assert.equal(store.db.prepare("SELECT COUNT(*) count FROM checkpoints WHERE work_item_id = ?").get(assignment.workItemId).count, 1);
+  assert.equal(store.db.prepare("SELECT COUNT(*) count FROM work_item_leases WHERE work_item_id = ?").get(assignment.workItemId).count, 0);
+  assert.equal(store.db.prepare("SELECT COUNT(*) count FROM resource_locks WHERE work_item_id = ?").get(assignment.workItemId).count, 0);
+  assert.equal(workspaceManager.claims.has(assignment.workItemId), false);
+  assert.deepEqual(adapter.interrupted, [assignment.workerId]);
+});
+
+test("paused task groups reject single-item retry until the group is resumed", async (t) => {
+  const { orchestrator, store } = await fixture(t, {
+    planner: async () => plan([item("paused-retry", ["lib/paused.mjs"])]),
+  });
+  const demand = await ingestConfirmed(orchestrator, {
+    threadId: "paused-retry",
+    sourceMessageId: "m1",
+    content: "Run the worker",
+    workspace: "/repo",
+  });
+  const [assignment] = await orchestrator.schedule(demand.taskGroupId);
+  await orchestrator.failWorker({
+    workerSessionId: assignment.workerSessionId,
+    runId: assignment.runId,
+    failure: { type: "worker_process", exitCode: 1 },
+  });
+  await orchestrator.pause(demand.taskGroupId);
+
+  await assert.rejects(
+    () => orchestrator.retryWorkItem(demand.taskGroupId, assignment.workItemId),
+    /paused task group/,
+  );
+  await orchestrator.resume(demand.taskGroupId);
+  assert.equal(store.get("work_items", assignment.workItemId).status, "ready");
 });
 
 test("pause, resume, and cancel control the task group without user-managed internal sessions", async (t) => {

@@ -84,6 +84,8 @@ DeepSeek Harness runs outside the 9codex package. Configure its adapter under
 ```json
 {
   "team": {
+    "model_call_start_timeout_seconds": 300,
+    "model_call_stall_seconds": 900,
     "harness": {
       "command": "/absolute/path/to/dsh-jsonrpc-agent",
       "args": [],
@@ -96,6 +98,12 @@ DeepSeek Harness runs outside the 9codex package. Configure its adapter under
   }
 }
 ```
+
+`model_call_start_timeout_seconds` bounds the wait for the first Runtime event.
+`model_call_stall_seconds` limits one silent model-call phase, not the WorkItem.
+WorkItems have no total duration or idle-output limit. Active local tool phases
+continue indefinitely. A stalled or retryable upstream call is checkpointed and
+rebuilt; the third identical failure is blocked instead of looping forever.
 
 Keep `cordis.yml`, Harness packages, session data, and provider credentials
 outside the 9codex package tree. Reference credentials through environment

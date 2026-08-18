@@ -92,6 +92,19 @@ test("times out stalled prompt and interrupt terminates the exclusive process", 
   assert.equal(["SIGTERM", "SIGKILL"].includes(exit.signal), true);
 });
 
+test("does not impose a total duration limit after Harness accepts a prompt", async (t) => {
+  const transport = create(t, "stalled-after-prompt", { requestTimeoutMs: 1_000 });
+  await transport.initialize();
+  let settled = false;
+  const running = transport.run("session-1", "wait").finally(() => { settled = true; });
+
+  await new Promise((resolve) => setTimeout(resolve, 1_250));
+  assert.equal(settled, false);
+
+  await transport.terminate();
+  await assert.rejects(running, /Harness process exited before run completion/);
+});
+
 test("shutdown requests protocol shutdown and reaps the process", async (t) => {
   const transport = create(t);
   await transport.initialize();

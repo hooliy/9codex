@@ -64,6 +64,8 @@ test("default configuration contains no relay address or API key", () => {
   assert.equal(config.upstream.api_key, null);
   assert.equal(config.team.host, "127.0.0.1");
   assert.equal(config.team.max_workers, 3);
+  assert.equal(config.team.model_call_stall_seconds, 900);
+  assert.equal(config.team.model_call_start_timeout_seconds, 300);
   assert.match(config.team.token, /^9codex_team_[0-9a-f]{64}$/);
   assert.deepEqual(config.team.harness, {
     command: "dsh-jsonrpc-agent",
@@ -82,6 +84,17 @@ test("team worker concurrency supports up to 20 workers", () => {
   assert.equal(validateConfig(config).team.max_workers, 20);
   config.team.max_workers = 21;
   assert.throws(() => validateConfig(config), /integer from 1 to 20/);
+});
+
+test("model call stall detection is positive and does not cap Worker duration", () => {
+  const config = defaultConfig();
+  config.team.model_call_stall_seconds = 3600;
+  assert.equal(validateConfig(config).team.model_call_stall_seconds, 3600);
+  config.team.model_call_stall_seconds = 0;
+  assert.throws(() => validateConfig(config), /model_call_stall_seconds/);
+  const start = defaultConfig();
+  start.team.model_call_start_timeout_seconds = 0;
+  assert.throws(() => validateConfig(start), /model_call_start_timeout_seconds/);
 });
 
 test("legacy team config receives Harness defaults and Harness config is strict", () => {

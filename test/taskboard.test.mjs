@@ -20,6 +20,14 @@ async function fixture() {
       calls.push(["delete-work", taskGroupId, workItemId]);
       return true;
     },
+    async stopWorkItem(taskGroupId, workItemId) {
+      calls.push(["stop-work", taskGroupId, workItemId]);
+      return { workItemId, status: "blocked" };
+    },
+    async retryWorkItem(taskGroupId, workItemId) {
+      calls.push(["retry-work", taskGroupId, workItemId]);
+      return { workItemId, status: "ready" };
+    },
     async clearTaskGroups() {
       calls.push(["clear-all"]);
       return 1;
@@ -426,6 +434,16 @@ test("taskboard serves a CSP-isolated page without embedding data", async () => 
     assert.match(page, /aria-labelledby="detail-title"/);
     assert.match(page, /\/api\/task-center/);
     assert.match(page, /\/work-items\/"\+encodeURIComponent\(item\.id\)/);
+    assert.match(page, /停止当前尝试/);
+    assert.match(page, /重试此工作项/);
+    assert.match(page, /尝试次数/);
+    assert.match(page, /监督心跳/);
+    assert.match(page, /Runtime 活动/);
+    assert.match(page, /有效进展/);
+    assert.match(page, /调用阶段/);
+    assert.match(page, /自动修复/);
+    assert.match(page, /最后失败/);
+    assert.match(page, /\/"\+action/);
     assert.match(page, /确认并执行/);
     assert.match(page, /需求分析师复述/);
     assert.match(page, /确认前缺失信息/);
@@ -473,7 +491,7 @@ test("taskboard serves a CSP-isolated page without embedding data", async () => 
   }
 });
 
-test("taskboard exposes one global task center and deletes one work item", async () => {
+test("taskboard exposes one global task center and controls one work item", async () => {
   const app = await fixture();
   try {
     const headers = { authorization: `Bearer ${token}` };
@@ -500,6 +518,22 @@ test("taskboard exposes one global task center and deletes one work item", async
     });
     assert.equal(response.status, 200);
     assert.deepEqual(app.calls.at(-1), ["delete-work", "tg_1", "wi_1"]);
+
+    const stopped = await fetch(`${app.base}/api/task-groups/tg_1/work-items/wi_1/stop`, {
+      method: "POST",
+      headers,
+    });
+    assert.equal(stopped.status, 200);
+    assert.deepEqual(await stopped.json(), { workItemId: "wi_1", status: "blocked" });
+    assert.deepEqual(app.calls.at(-1), ["stop-work", "tg_1", "wi_1"]);
+
+    const retried = await fetch(`${app.base}/api/task-groups/tg_1/work-items/wi_1/retry`, {
+      method: "POST",
+      headers,
+    });
+    assert.equal(retried.status, 200);
+    assert.deepEqual(await retried.json(), { workItemId: "wi_1", status: "ready" });
+    assert.deepEqual(app.calls.at(-1), ["retry-work", "tg_1", "wi_1"]);
   } finally {
     await app.close();
   }

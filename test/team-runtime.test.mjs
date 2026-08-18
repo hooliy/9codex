@@ -10,10 +10,50 @@ import {
   prepareWorkerHome,
   preflightWorkerNode,
   publishCodexThread,
+  repairRuntimeConfiguration,
   startTeamRuntime,
 } from "../lib/team-runtime.mjs";
 import { defaultConfig } from "../lib/config.mjs";
 import { openTeamStore } from "../lib/team-store.mjs";
+
+test("runtime configuration repair refreshes changed credentials and model catalogs", async () => {
+  const previous = defaultConfig();
+  previous.upstream.api_key = "old-key";
+  const changed = structuredClone(previous);
+  changed.upstream.api_key = "new-key";
+
+  assert.equal(
+    await repairRuntimeConfiguration({}, previous, {
+      category: "upstream_authentication_failed",
+    }, {
+      loadConfig: () => changed,
+    }),
+    changed,
+  );
+
+  const reconciled = structuredClone(changed);
+  reconciled.upstream.default_model = "replacement-model";
+  const repaired = await repairRuntimeConfiguration({}, changed, {
+    category: "model_unavailable",
+  }, {
+    loadConfig: () => changed,
+    reconcileModelState: async () => ({ config: reconciled }),
+  });
+  assert.equal(repaired.upstream.default_model, "replacement-model");
+});
+
+test("runtime configuration repair blocks authentication retry when no refreshed credential exists", async () => {
+  const config = defaultConfig();
+  config.upstream.api_key = "unchanged-key";
+  await assert.rejects(
+    () => repairRuntimeConfiguration({}, config, {
+      category: "upstream_authentication_failed",
+    }, {
+      loadConfig: () => config,
+    }),
+    /no refreshed upstream credentials/,
+  );
+});
 
 test("worker home preserves PATH behind the current Node.js binary", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "9codex-worker-home-"));
@@ -157,6 +197,7 @@ test("runtime blocks work items after one failed Worker Node.js preflight", asyn
 
 test("runtime supervises scheduled workers and records their report", async () => {
   const reports = [];
+  const waitOptions = [];
   const assignments = [{
     taskGroupId: "tg_1",
     runtimeKind: "codex",
@@ -170,9 +211,13 @@ test("runtime supervises scheduled workers and records their report", async () =
     paths: {},
     store: {
       listTaskGroups: () => [{ id: "tg_1", status: "executing" }],
+      get: (table, id) => table === "runs" && id === "run_1" ? { id, status: "running" } : undefined,
     },
     codexRuntime: {
-      waitWorker: async () => ({ ok: true, code: 0 }),
+      waitWorker: async (_workerId, options) => {
+        waitOptions.push(options);
+        return { ok: true, code: 0 };
+      },
       readEvents: () => [{
         type: "run.output",
         runtime_kind: "codex",
@@ -195,22 +240,27 @@ test("runtime supervises scheduled workers and records their report", async () =
   await Promise.all([...runtime.supervisions.values()]);
 
   assert.equal(reports.length, 1);
+  assert.deepEqual(waitOptions, [undefined]);
   assert.equal(reports[0].workerSessionId, "ws_1");
   assert.equal(reports[0].report.summary, "done");
 });
 
-test("runtime renews worker heartbeats while a silent worker is running", async () => {
+test("runtime renews heartbeats without interrupting a silent worker", async () => {
   const heartbeats = [];
+  const interruptions = [];
   let finish;
   const runtime = new TeamRuntime({
     config: { team: { lease_seconds: 60 } },
     paths: {},
-    store: { listTaskGroups: () => [{ id: "tg_1", status: "executing" }] },
+    store: {
+      listTaskGroups: () => [{ id: "tg_1", status: "executing" }],
+      get: (table, id) => table === "runs" && id === "run_1" ? { id, status: "running" } : undefined,
+    },
     codexRuntime: {
       workers: new Map([["worker_1", { lastEventAt: Date.now() }]]),
       waitWorker: () => new Promise((resolve) => { finish = resolve; }),
       readEvents: () => [],
-      interruptWorker() {},
+      interruptWorker(worker) { interruptions.push(worker); },
     },
     harnessRuntime: {},
     orchestrator: {
@@ -233,14 +283,107 @@ test("runtime renews worker heartbeats while a silent worker is running", async 
   await Promise.all([...runtime.supervisions.values()]);
 
   assert.equal(heartbeats.some((row) => row.workerSessionId === "ws_1"), true);
+  assert.deepEqual(interruptions, []);
 });
 
-test("runtime sends non-zero worker exits directly to rework", async () => {
+test("runtime repairs a stalled model call without imposing a Worker duration limit", async () => {
+  const recoveries = [];
+  let finish;
+  const runtime = new TeamRuntime({
+    config: { team: { lease_seconds: 60, model_call_stall_seconds: 1 } },
+    paths: {},
+    store: {
+      listTaskGroups: () => [{ id: "tg_1", status: "executing" }],
+      get: (table, id) => table === "runs" && id === "run_1" ? { id, status: "running" } : undefined,
+    },
+    codexRuntime: {
+      waitWorker: () => new Promise((resolve) => { finish = resolve; }),
+      readEvents: () => [],
+      inspectWorker: () => ({
+        phase: "model_waiting",
+        lastRuntimeEventAt: Date.now() - 2_000,
+      }),
+      interruptWorker() {},
+    },
+    harnessRuntime: {},
+    orchestrator: {
+      heartbeatTimeoutMs: 20,
+      recover: async () => ({ started: [] }),
+      schedule: async () => [{
+        taskGroupId: "tg_1", runtimeKind: "codex", workItemId: "wi_1",
+        workerSessionId: "ws_1", runId: "run_1", workerId: "worker_1",
+      }],
+      heartbeat() {},
+      async recoverWorker(input) {
+        recoveries.push(input);
+        queueMicrotask(() => finish({ ok: false, interrupted: true }));
+        return { status: "recovering", started: [] };
+      },
+    },
+    publishOutbox: async () => [],
+    onError: (error) => { throw error; },
+  });
+
+  await runtime.tick();
+  await new Promise((resolve) => setTimeout(resolve, 1100));
+  await Promise.all([...runtime.supervisions.values()]);
+
+  assert.equal(recoveries.length, 1);
+  assert.equal(recoveries[0].failure.category, "upstream_stream_stalled");
+  assert.equal(recoveries[0].failure.phase, "model_waiting");
+});
+
+test("runtime repairs a Worker that never reaches its first Runtime event", async () => {
+  const recoveries = [];
+  let finish;
+  const runtime = new TeamRuntime({
+    config: { team: { lease_seconds: 60, model_call_start_timeout_seconds: 1, model_call_stall_seconds: 60 } },
+    paths: {},
+    store: {
+      listTaskGroups: () => [{ id: "tg_1", status: "executing" }],
+      get: (table, id) => table === "runs" && id === "run_1" ? { id, status: "running" } : undefined,
+    },
+    codexRuntime: {
+      waitWorker: () => new Promise((resolve) => { finish = resolve; }),
+      readEvents: () => [],
+      inspectWorker: () => ({ phase: "starting", lastRuntimeEventAt: Date.now() - 2_000 }),
+      interruptWorker() {},
+    },
+    harnessRuntime: {},
+    orchestrator: {
+      heartbeatTimeoutMs: 20,
+      recover: async () => ({ started: [] }),
+      schedule: async () => [{
+        taskGroupId: "tg_1", runtimeKind: "codex", workItemId: "wi_1",
+        workerSessionId: "ws_1", runId: "run_1", workerId: "worker_1",
+      }],
+      heartbeat() {},
+      async recoverWorker(input) {
+        recoveries.push(input);
+        queueMicrotask(() => finish({ ok: false, interrupted: true }));
+        return { status: "recovering", started: [] };
+      },
+    },
+    publishOutbox: async () => [],
+    onError: (error) => { throw error; },
+  });
+
+  await runtime.tick();
+  await new Promise((resolve) => setTimeout(resolve, 1100));
+  await Promise.all([...runtime.supervisions.values()]);
+
+  assert.equal(recoveries[0].failure.category, "upstream_first_event_timeout");
+});
+
+test("runtime sends non-zero worker exits to the manual-retry blocker", async () => {
   const failures = [];
   const runtime = new TeamRuntime({
     config: { team: { lease_seconds: 60 } },
     paths: {},
-    store: { listTaskGroups: () => [{ id: "tg_1", status: "executing" }] },
+    store: {
+      listTaskGroups: () => [{ id: "tg_1", status: "executing" }],
+      get: (table, id) => table === "runs" && id === "run_1" ? { id, status: "running" } : undefined,
+    },
     codexRuntime: {
       waitWorker: async () => ({ ok: false, code: 17, signal: null }),
       readEvents: () => [{
@@ -274,7 +417,10 @@ test("runtime supervises Harness assignments through the Harness runtime", async
   const runtime = new TeamRuntime({
     config: { team: { lease_seconds: 60 } },
     paths: {},
-    store: { listTaskGroups: () => [{ id: "tg_1", status: "executing" }] },
+    store: {
+      listTaskGroups: () => [{ id: "tg_1", status: "executing" }],
+      get: (table, id) => table === "runs" && id === "run_1" ? { id, status: "running" } : undefined,
+    },
     codexRuntime: {
       waitWorker() { throw new Error("Codex runtime must not be used"); },
     },

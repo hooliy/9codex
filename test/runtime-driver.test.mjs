@@ -7,6 +7,7 @@ import {
   RuntimeDriver,
   RuntimeTimeoutError,
   assertRuntimeKind,
+  classifyRuntimeFailure,
 } from "../lib/runtime-driver.mjs";
 
 function fakeCodexAdapter() {
@@ -61,6 +62,10 @@ function fakeCodexAdapter() {
     forgetWorker(worker) {
       calls.push(["forgetWorker", worker.id]);
       return true;
+    },
+    inspectWorker(worker) {
+      calls.push(["inspectWorker", worker.id]);
+      return { phase: "model_waiting", lastRuntimeEventAt: 1 };
     },
     resumeThread(sessionId, instruction) {
       calls.push(["resumeThread", sessionId, instruction]);
@@ -128,6 +133,28 @@ test("runtime_kind only accepts codex and deepseek-harness", () => {
   assert.throws(() => assertRuntimeKind(), /runtime_kind/);
 });
 
+test("runtime failure classification separates retryable upstream faults from hard configuration faults", () => {
+  assert.deepEqual(classifyRuntimeFailure({
+    code: "HARNESS_REQUEST_TIMEOUT",
+    message: "Harness request session/prompt timed out",
+  }), {
+    category: "upstream_request_timeout",
+    recoverable: true,
+    code: "HARNESS_REQUEST_TIMEOUT",
+    status: null,
+  });
+  assert.equal(classifyRuntimeFailure({ message: "HTTP 429 retry later" }).category, "upstream_rate_limited");
+  assert.equal(
+    classifyRuntimeFailure({ message: "HTTP 429 retry-after: 5" }).retryAfterMs,
+    5_000,
+  );
+  assert.equal(classifyRuntimeFailure({ message: "HTTP 503 unavailable" }).recoverable, true);
+  assert.equal(classifyRuntimeFailure({ message: "401 invalid API key" }).recoverable, true);
+  assert.equal(classifyRuntimeFailure({ message: "upstream_quota_exhausted" }).category, "upstream_quota_exhausted");
+  assert.equal(classifyRuntimeFailure({ message: "model not found" }).category, "model_unavailable");
+  assert.equal(classifyRuntimeFailure({ message: "context length exceeded" }).category, "context_limit");
+});
+
 test("CodexRuntime reuses CodexAdapter and exposes unified events", async () => {
   const { adapter, calls } = fakeCodexAdapter();
   const runtime = new CodexRuntime({ adapter });
@@ -159,13 +186,32 @@ test("CodexRuntime reuses CodexAdapter and exposes unified events", async () => 
   assert.equal(runtime.interruptWorker(worker), true);
   assert.equal((await runtime.closeWorker(worker)).ok, true);
   assert.equal(runtime.forgetWorker(worker), true);
+  assert.deepEqual(runtime.inspectWorker(worker), {
+    phase: "model_waiting",
+    lastRuntimeEventAt: 1,
+    failure: null,
+  });
   assert.deepEqual(calls.slice(1), [
     ["sendInstruction", "codex-worker", "review"],
     ["resumeWorker", "codex-worker", "continue"],
     ["interruptWorker", "codex-worker"],
     ["closeWorker", "codex-worker"],
     ["forgetWorker", "codex-worker"],
+    ["inspectWorker", "codex-worker"],
   ]);
+});
+
+test("CodexRuntime treats repeated upstream retry output as a model-call fault", () => {
+  const { adapter } = fakeCodexAdapter();
+  adapter.inspectWorker = () => ({
+    phase: "model_waiting",
+    lastRuntimeEventAt: 1,
+    lastEvent: { type: "message", text: "retry later" },
+    retrySignalCount: 3,
+  });
+  const runtime = new CodexRuntime({ adapter });
+
+  assert.equal(runtime.inspectWorker("codex-worker").failure.category, "upstream_rate_limited");
 });
 
 test("HarnessRuntime provides create, resume, unified events, and graceful close", async () => {
@@ -347,6 +393,7 @@ test("RuntimeDriver binds one matching runtime without a registry", () => {
     closeWorker: (...args) => args,
     resumeThread: (...args) => args,
     forgetWorker: (...args) => args,
+    inspectWorker: (...args) => args,
   };
   const driver = new RuntimeDriver({ runtime_kind: "codex", runtime });
 

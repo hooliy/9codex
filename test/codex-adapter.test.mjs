@@ -188,6 +188,45 @@ test("parses fragmented JSONL, preserves events, and records bad lines", async (
   assert.equal(events.at(-1).type, "adapter.process_exit");
 });
 
+test("inspectWorker distinguishes a model call from an active local tool", () => {
+  const { adapter, calls } = harness();
+  const worker = adapter.createWorker("Run");
+
+  calls[0].process.output(
+    '{"type":"thread.started","thread_id":"thread-activity"}\n',
+    '{"type":"turn.started"}\n',
+  );
+  assert.equal(adapter.inspectWorker(worker).phase, "model_waiting");
+
+  calls[0].process.output(
+    '{"type":"item.started","item":{"type":"command_execution","command":"npm test"}}\n',
+  );
+  assert.equal(adapter.inspectWorker(worker).phase, "tool_running");
+
+  calls[0].process.output(
+    '{"type":"item.completed","item":{"type":"command_execution","command":"npm test"}}\n',
+  );
+  assert.equal(adapter.inspectWorker(worker).phase, "model_waiting");
+
+  calls[0].process.output(
+    '{"type":"item.started","item":{"type":"agent_message"}}\n',
+  );
+  assert.equal(adapter.inspectWorker(worker).phase, "model_waiting");
+});
+
+test("inspectWorker counts only trailing retry signals", () => {
+  const { adapter, calls } = harness();
+  const worker = adapter.createWorker("Run");
+  calls[0].process.output(
+    '{"type":"message","text":"retry later"}\n',
+    '{"type":"message","text":"429 retry later"}\n',
+    '{"type":"message","text":"upstream unavailable, retrying"}\n',
+  );
+  assert.equal(adapter.inspectWorker(worker).retrySignalCount, 3);
+  calls[0].process.output('{"type":"message","text":"connection recovered"}\n');
+  assert.equal(adapter.inspectWorker(worker).retrySignalCount, 0);
+});
+
 test("returns non-zero exit codes and stderr as structured evidence", async () => {
   const { adapter, calls } = harness();
   const worker = adapter.createWorker("Fail");

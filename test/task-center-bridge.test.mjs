@@ -76,7 +76,7 @@ test("task center bridge injects one global task center entry with live worker d
   assert.match(source, /KeyS/);
   assert.match(source, /metaKey/);
   assert.match(source, /altKey/);
-  assert.match(source, /const version = 21/);
+  assert.match(source, /const version = 22/);
   assert.doesNotMatch(source, /显示\/隐藏侧边栏|展开面板|KeyB/);
   assert.doesNotMatch(source, /data-close aria-label="关闭任务中心"/);
   assert.match(source, /\.nine-st-board\{display:grid;grid-template-columns:1fr/);
@@ -89,6 +89,17 @@ test("task center bridge injects one global task center entry with live worker d
   assert.match(source, /工作项执行详情/);
   assert.match(source, /历史尝试/);
   assert.match(source, /Checkpoint/);
+  assert.match(source, /停止当前尝试/);
+  assert.match(source, /重试此工作项/);
+  assert.match(source, /stop_work_item/);
+  assert.match(source, /retry_work_item/);
+  assert.match(source, /尝试次数/);
+  assert.match(source, /监督心跳/);
+  assert.match(source, /Runtime 活动/);
+  assert.match(source, /有效进展/);
+  assert.match(source, /调用阶段/);
+  assert.match(source, /自动修复/);
+  assert.match(source, /最后失败/);
   assert.match(source, /删除此工作项/);
   assert.match(source, /清空全部任务/);
   assert.match(source, /在浏览器中打开完整任务板/);
@@ -631,6 +642,135 @@ test("task center enriches queued work with dependency, owner, reason, progress,
   assert.deepEqual(ready.unmet_dependencies, ["wi_1"]);
   assert.match(ready.waiting_reason, /等待依赖/);
   assert.match(ready.next_action, /自动调度/);
+});
+
+test("task center exposes real attempt counts and the latest worker failure", () => {
+  const [work] = enrichWorkItems({
+    work_items: [{
+      id: "wi_1",
+      title: "Long task",
+      status: "blocked",
+      updated_at: "2026-08-18T01:00:00.000Z",
+    }],
+    worker_sessions: [{
+      id: "ws_2",
+      work_item_id: "wi_1",
+      role: "worker",
+      status: "interrupted",
+      runtime_kind: "codex",
+      last_heartbeat_at: "2026-08-18T02:00:00.000Z",
+      updated_at: "2026-08-18T02:01:00.000Z",
+    }],
+    runs: [
+      {
+        id: "run_1",
+        worker_session_id: "ws_1",
+        work_item_id: "wi_1",
+        role: "worker",
+        status: "failed",
+        created_at: "2026-08-18T00:00:00.000Z",
+      },
+      {
+        id: "run_2",
+        worker_session_id: "ws_2",
+        work_item_id: "wi_1",
+        role: "worker",
+        status: "interrupted",
+        created_at: "2026-08-18T01:00:00.000Z",
+      },
+    ],
+    evidence: [{
+      id: "ev_1",
+      work_item_id: "wi_1",
+      type: "worker_process",
+      source: "codex",
+      exit_code: 17,
+      metadata: JSON.stringify({ message: "auth failed" }),
+      created_at: "2026-08-18T00:01:00.000Z",
+    }],
+  });
+
+  assert.equal(work.attempt_count, 2);
+  assert.equal(work.failed_attempt_count, 1);
+  assert.equal(work.interrupted_attempt_count, 1);
+  assert.equal(work.last_heartbeat_at, "2026-08-18T02:00:00.000Z");
+  assert.deepEqual(work.last_failure, {
+    at: "2026-08-18T00:01:00.000Z",
+    source: "codex",
+    exit_code: 17,
+    metadata: { message: "auth failed" },
+  });
+});
+
+test("task center reports model-call evidence as the latest failure", () => {
+  const [work] = enrichWorkItems({
+    work_items: [{ id: "wi_1", status: "blocked" }],
+    evidence: [{
+      id: "ev_1",
+      work_item_id: "wi_1",
+      type: "model_call",
+      source: "codex",
+      metadata: JSON.stringify({ category: "upstream_stream_stalled" }),
+      created_at: "2026-08-18T05:00:00.000Z",
+    }],
+  });
+
+  assert.equal(work.last_failure.at, "2026-08-18T05:00:00.000Z");
+  assert.equal(work.last_failure.metadata.category, "upstream_stream_stalled");
+});
+
+test("task center separates supervisor heartbeat, runtime activity, progress, and recovery state", () => {
+  const [work] = enrichWorkItems({
+    work_items: [{ id: "wi_1", title: "Recovering", status: "running" }],
+    worker_sessions: [{
+      id: "ws_1",
+      work_item_id: "wi_1",
+      role: "worker",
+      status: "running",
+      runtime_kind: "codex",
+      last_heartbeat_at: "2026-08-18T04:10:00.000Z",
+    }],
+    runs: [{
+      id: "run_1",
+      worker_session_id: "ws_1",
+      work_item_id: "wi_1",
+      role: "worker",
+      status: "running",
+      created_at: "2026-08-18T04:00:00.000Z",
+    }],
+    events: [
+      {
+        event_type: "worker.runtime_activity",
+        created_at: "2026-08-18T04:08:00.000Z",
+        payload: { workItemId: "wi_1", workerSessionId: "ws_1", phase: "model_waiting" },
+      },
+      {
+        event_type: "worker.output",
+        created_at: "2026-08-18T04:05:00.000Z",
+        payload: { workItemId: "wi_1", workerSessionId: "ws_1", activity: { text: "editing" } },
+      },
+      {
+        event_type: "project_manager.replanned",
+        created_at: "2026-08-18T04:09:00.000Z",
+        payload: {
+          workItemId: "wi_1",
+          reason: "model_call_recovery",
+          recoveryAttempt: 2,
+          recoveryAction: "rebuild_runtime_session",
+        },
+      },
+    ],
+  });
+
+  assert.equal(work.last_heartbeat_at, "2026-08-18T04:10:00.000Z");
+  assert.equal(work.last_runtime_event_at, "2026-08-18T04:08:00.000Z");
+  assert.equal(work.last_progress_at, "2026-08-18T04:05:00.000Z");
+  assert.equal(work.model_call_phase, "model_waiting");
+  assert.deepEqual(work.recovery, {
+    at: "2026-08-18T04:09:00.000Z",
+    attempt: 2,
+    action: "rebuild_runtime_session",
+  });
 });
 
 test("task center navigates Codex cards through the owning native conversation", () => {

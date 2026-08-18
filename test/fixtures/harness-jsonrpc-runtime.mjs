@@ -60,6 +60,11 @@ input.on("line", (line) => {
     return;
   }
   if (mode === "timeout") return;
+  if (mode === "stalled-after-prompt") {
+    send({ jsonrpc: "2.0", id: request.id, result: { messageId: `message-${turn}` } });
+    notify("session.status", { sessionId, status: "running" });
+    return;
+  }
   if (mode === "invalid-json-after-prompt") {
     send({ jsonrpc: "2.0", id: request.id, result: { messageId: `message-${turn}` } });
     setTimeout(() => process.stdout.write("{invalid-json\n"), 5);
