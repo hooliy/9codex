@@ -212,7 +212,7 @@ function plan(workItems, requirement = {}) {
       normalizedRequirement: requirement.normalizedRequirement || "Build the requested feature",
       acceptanceCriteria: requirement.acceptanceCriteria || [{ id: "all", command: ["node", "--test"] }],
       impactSummary: requirement.impactSummary || "planned",
-      impactActions: requirement.impactActions || {},
+      impactActions: requirement.impactActions || [],
       workItems,
     }],
   };
@@ -644,6 +644,40 @@ test("expanded Chinese confirmation approves the pending plan", async (t) => {
     workspace: "/repo",
   });
   assert.equal(confirmed.confirmed, true);
+  assert.equal(store.db.prepare("SELECT COUNT(*) count FROM work_items").get().count, 1);
+});
+
+test("the prompted Chinese confirmation approves the pending plan after status recovery", async (t) => {
+  let plannerCalls = 0;
+  const { orchestrator, store } = await fixture(t, {
+    planner: async () => {
+      plannerCalls += 1;
+      return plan([item("implementation", ["lib/a.mjs"])]);
+    },
+  });
+  const waiting = await orchestrator.ingestDemand({
+    threadId: "prompted-confirmation",
+    sourceMessageId: "m1",
+    content: "Build a normal feature",
+    workspace: "/repo",
+  });
+  const group = store.get("task_groups", waiting.taskGroupId);
+  store.updateTaskGroupStatus(group.id, {
+    expectedVersion: group.version,
+    status: "collecting",
+    reason: "simulated_confirmation_failure",
+  });
+
+  const confirmed = await orchestrator.ingestDemand({
+    threadId: "prompted-confirmation",
+    sourceMessageId: "m2",
+    content: "确认任务组开始执行",
+    workspace: "/repo",
+  });
+
+  assert.equal(confirmed.confirmed, true);
+  assert.equal(plannerCalls, 1);
+  assert.equal(store.db.prepare("SELECT COUNT(*) count FROM requirements").get().count, 1);
   assert.equal(store.db.prepare("SELECT COUNT(*) count FROM work_items").get().count, 1);
 });
 
@@ -1108,7 +1142,10 @@ test("requirement change versions demand, interrupts old worker, and marks affec
       call += 1;
       return call === 1
         ? plan([item("old", ["lib/old.mjs"])], { normalizedRequirement: "v1" })
-        : plan([item("new", ["lib/new.mjs"])], { normalizedRequirement: "v2", impactActions: { [oldItemId]: "rework" } });
+        : plan([item("new", ["lib/new.mjs"])], {
+            normalizedRequirement: "v2",
+            impactActions: [{ workItemId: oldItemId, action: "rework" }],
+          });
     },
   });
   const first = await ingestConfirmed(orchestrator, { threadId: "thread-change", sourceMessageId: "m1", content: "Initial", workspace: "/repo" });

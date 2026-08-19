@@ -28,7 +28,7 @@ function requirement(key = "requirement-1") {
     normalizedRequirement: "实现功能",
     impactSummary: "新增功能",
     acceptanceCriteria: [{ id: "tests", command: ["npm", "test"] }],
-    impactActions: {},
+    impactActions: [],
     workItems: [workItem()],
   };
 }
@@ -118,5 +118,34 @@ test("rejects shell command strings at the trust boundary", () => {
       }],
     }),
     /command must be a non-empty argv array/,
+  );
+});
+
+test("normalizes closed impact action entries", () => {
+  const proposal = normalizeDemandProposal({
+    summary: "变更",
+    questions: [],
+    requirements: [{
+      ...requirement(),
+      impactActions: [{ workItemId: "wi-1", action: "rework" }],
+    }],
+  });
+
+  assert.deepEqual(proposal.requirements[0].impactActions, [
+    { workItemId: "wi-1", action: "rework" },
+  ]);
+});
+
+test("rejects dynamic impact action objects", () => {
+  assert.throws(
+    () => normalizeDemandProposal({
+      summary: "变更",
+      questions: [],
+      requirements: [{
+        ...requirement(),
+        impactActions: { "wi-1": "rework" },
+      }],
+    }),
+    /impactActions must be an array/,
   );
 });

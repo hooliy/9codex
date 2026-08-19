@@ -5,6 +5,7 @@ import path from "node:path";
 import test from "node:test";
 
 import { createTeamPlanner } from "../lib/team-planner.mjs";
+import { DEMAND_PROPOSAL_SCHEMA } from "../lib/demand-intake.mjs";
 
 function plannedOutput() {
   return JSON.stringify({
@@ -17,7 +18,7 @@ function plannedOutput() {
       normalizedRequirement: "Implement login",
       impactSummary: "new feature",
       acceptanceCriteria: [{ id: "test", command: ["npm", "test"] }],
-      impactActions: {},
+      impactActions: [],
       workItems: [{
         key: "auth",
         title: "Auth",
@@ -32,6 +33,31 @@ function plannedOutput() {
     }],
   });
 }
+
+function assertClosedStructuredOutputSchema(schema, location = "$") {
+  if (!schema || typeof schema !== "object") return;
+  if (schema.type === "object") {
+    assert.equal(schema.additionalProperties, false, `${location} must be closed`);
+    const properties = Object.keys(schema.properties || {}).sort();
+    const required = [...(schema.required || [])].sort();
+    assert.deepEqual(required, properties, `${location} must require every property`);
+    for (const [key, value] of Object.entries(schema.properties || {})) {
+      assertClosedStructuredOutputSchema(value, `${location}.${key}`);
+    }
+  }
+  if (schema.items) assertClosedStructuredOutputSchema(schema.items, `${location}[]`);
+  for (const [index, value] of (schema.anyOf || []).entries()) {
+    assertClosedStructuredOutputSchema(value, `${location}.anyOf[${index}]`);
+  }
+}
+
+test("Demand Proposal schema is closed for Codex Structured Outputs", () => {
+  assertClosedStructuredOutputSchema(DEMAND_PROPOSAL_SCHEMA);
+  const impactActions = DEMAND_PROPOSAL_SCHEMA
+    .properties.requirements.items.properties.impactActions;
+  assert.equal(impactActions.type, "array");
+  assert.equal(impactActions.items.additionalProperties, false);
+});
 
 test("Codex project planner uses the Codex Runtime with read-only structured output", async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "9codex-planner-test-"));

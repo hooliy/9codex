@@ -109,7 +109,7 @@ Proposal 必须精确匹配 `/Users/cc/9codex/lib/demand-intake.mjs` 的 camelCa
           "command": ["npm", "test"]
         }
       ],
-      "impactActions": {},
+      "impactActions": [],
       "workItems": [
         {
           "key": "work-1",
@@ -144,7 +144,7 @@ Proposal 必须精确匹配 `/Users/cc/9codex/lib/demand-intake.mjs` 的 camelCa
 - `workItems` 至少一项；每个工作项 `key` 在所属 Requirement 内唯一。
 - `writeSet`、`readSet`、`resourceLocks`、`dependencies` 使用数组；`priority` 使用整数。
 - `impactSummary` 说明新增、修改、删除、影响范围及重新验收原因。
-- `impactActions` 以现有 WorkItem ID 为键，值只允许 `rework`、`revalidate`、`stale`、`canceled`。
+- `impactActions` 是封闭对象数组；每项必须包含现有 `workItemId` 与 `action`，`action` 只允许 `rework`、`revalidate`、`stale`、`canceled`。
 - 缺失信息写入顶层 `questions`。影响交付定义、工作区或验收方式的问题未解决时，不进入确认。
 - 批量材料在同一 Proposal 的 `requirements` 中拆分；来源证据只放独立 `source` 参数。
 - 重复内容只标记为候选重复，不静默合并。

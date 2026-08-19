@@ -86,7 +86,7 @@ test("real Git vertical loop confirms, executes, reviews, commits, integrates, c
         normalizedRequirement: "Create feature.txt",
         acceptanceCriteria: [{ id: "tests", command: ["npm", "test"] }],
         impactSummary: "new feature",
-        impactActions: {},
+        impactActions: [],
         workItems: [{
           key: "feature",
           title: "Create feature",

@@ -64,7 +64,7 @@ test("submits immutable demand events through the authenticated team API", async
       normalizedRequirement: "实现登录",
       impactSummary: "新增认证",
       acceptanceCriteria: [{ id: "tests", command: ["npm", "test"] }],
-      impactActions: {},
+      impactActions: [],
       workItems: [{
         key: "implementation",
         title: "实现",
