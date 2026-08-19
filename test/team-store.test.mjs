@@ -71,7 +71,7 @@ test("creates the complete versioned SQLite schema with operational pragmas", as
   assert.equal(store.pragma("user_version").user_version, CURRENT_SCHEMA_VERSION);
   assert.deepEqual(
     store.db.prepare("SELECT version FROM schema_migrations").all().map((row) => ({ ...row })),
-    [{ version: 1 }, { version: 2 }, { version: 3 }],
+    Array.from({ length: CURRENT_SCHEMA_VERSION }, (_, index) => ({ version: index + 1 })),
   );
   assert.equal(store.getTaskGroupByThread("missing"), undefined);
 });
@@ -393,7 +393,10 @@ test("deletes and clears task groups with all cascaded lifecycle state", async (
   assert.equal(store.listTaskGroups().length, 0);
   assert.equal(store.db.prepare("SELECT COUNT(*) count FROM events").get().count, 0);
   assert.equal(store.db.prepare("SELECT COUNT(*) count FROM outbox").get().count, 0);
-  assert.equal(store.db.prepare("SELECT COUNT(*) count FROM schema_migrations").get().count, 3);
+  assert.equal(
+    store.db.prepare("SELECT COUNT(*) count FROM schema_migrations").get().count,
+    CURRENT_SCHEMA_VERSION,
+  );
 });
 
 test("requires independent evidence-backed acceptance before closing work or task group", async (t) => {
@@ -717,7 +720,7 @@ test("resolves an active request within an explicit thread when other threads ar
   );
 });
 
-test("schema v3 migrates Codex session data without loss", async (t) => {
+test("schema v4 migrates Codex session data and pending Demand Proposals without loss", async (t) => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "9codex-team-v1-v2-"));
   const dbPath = path.join(dir, "team.sqlite");
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
@@ -739,6 +742,33 @@ test("schema v3 migrates Codex session data without loss", async (t) => {
       id, worker_session_id, role, status, version, started_at, created_at, updated_at
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
   `).run("run-v1", "ws-v1", "worker", "running", 0, timestamp, timestamp, timestamp);
+  v1.db.prepare(`
+    INSERT INTO demand_events(
+      id, event_key, task_group_id, source_message_id, raw_content,
+      classified_type, classification_confidence, received_at, processed_at, result_json
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    "de-v1",
+    "thread-v1:message-1",
+    "tg-v1",
+    "message-1",
+    "Legacy proposal",
+    "requirement_change",
+    0.9,
+    timestamp,
+    timestamp,
+    JSON.stringify({
+      status: "awaiting_confirmation",
+      proposal: {
+        requirements: [{
+          impactActions: { "wi-old": "rework" },
+        }],
+      },
+      proposedRequirements: [{
+        impactActions: { "wi-old": "rework" },
+      }],
+    }),
+  );
   v1.close();
 
   const v2 = await openTeamStore(dbPath);
@@ -761,10 +791,15 @@ test("schema v3 migrates Codex session data without loss", async (t) => {
   );
   assert.equal(v2.get("task_groups", "tg-v1").runtime_kind, "codex");
   assert.equal(v2.get("runs", "run-v1").runtime_kind, "codex");
+  const demand = JSON.parse(v2.get("demand_events", "de-v1").result_json);
+  assert.deepEqual(demand.proposal.requirements[0].impactActions, [
+    { workItemId: "wi-old", action: "rework" },
+  ]);
+  assert.deepEqual(demand.proposedRequirements, demand.proposal.requirements);
   assert.equal(v2.db.prepare("PRAGMA foreign_key_check").all().length, 0);
   assert.deepEqual(
     v2.db.prepare("SELECT version FROM schema_migrations ORDER BY version").all().map((row) => ({ ...row })),
-    [{ version: 1 }, { version: 2 }, { version: 3 }],
+    [{ version: 1 }, { version: 2 }, { version: 3 }, { version: 4 }],
   );
 });
 
