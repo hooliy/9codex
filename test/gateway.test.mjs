@@ -275,6 +275,43 @@ test("native Responses routing preserves unknown JSON while replacing model and 
   assert.match(await response.text(), /response\.completed/);
 });
 
+test("gateway forwards Responses request bodies larger than 64 MiB", async (t) => {
+  let capturedLength;
+  const upstream = http.createServer(async (req, res) => {
+    const chunks = [];
+    for await (const chunk of req) chunks.push(chunk);
+    capturedLength = Buffer.concat(chunks).length;
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify({ id: "resp_test", object: "response", output: [] }));
+  });
+  const upstreamUrl = await listen(upstream);
+  t.after(() => new Promise((resolve) => upstream.close(resolve)));
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "9codex-gateway-test-"));
+  const paths = resolvePaths(home);
+  const config = gatewayConfig(upstreamUrl);
+  await routingFixture(paths, config);
+  const gateway = createGateway(config, paths);
+  const gatewayUrl = await listen(gateway);
+  t.after(() => new Promise((resolve) => gateway.close(resolve)));
+  const body = JSON.stringify({
+    model: "raw/model",
+    input: "x".repeat(64 * 1024 * 1024),
+    stream: false,
+  });
+
+  const response = await fetch(`${gatewayUrl}/v1/responses`, {
+    method: "POST",
+    headers: {
+      authorization: "Bearer 9codex_local_test",
+      "content-type": "application/json",
+    },
+    body,
+  });
+
+  assert.equal(response.status, 200);
+  assert.ok(capturedLength > 64 * 1024 * 1024);
+});
+
 test("native Responses routing preserves priority service tier for GPT models", async (t) => {
   let capturedBody;
   const upstream = http.createServer(async (req, res) => {
