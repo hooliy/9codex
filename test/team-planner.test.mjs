@@ -1,11 +1,8 @@
 import assert from "node:assert/strict";
-import fs from "node:fs";
 import os from "node:os";
-import path from "node:path";
 import test from "node:test";
 
 import { createTeamPlanner } from "../lib/team-planner.mjs";
-import { DEMAND_PROPOSAL_SCHEMA } from "../lib/demand-intake.mjs";
 
 function plannedOutput() {
   return JSON.stringify({
@@ -34,33 +31,8 @@ function plannedOutput() {
   });
 }
 
-function assertClosedStructuredOutputSchema(schema, location = "$") {
-  if (!schema || typeof schema !== "object") return;
-  if (schema.type === "object") {
-    assert.equal(schema.additionalProperties, false, `${location} must be closed`);
-    const properties = Object.keys(schema.properties || {}).sort();
-    const required = [...(schema.required || [])].sort();
-    assert.deepEqual(required, properties, `${location} must require every property`);
-    for (const [key, value] of Object.entries(schema.properties || {})) {
-      assertClosedStructuredOutputSchema(value, `${location}.${key}`);
-    }
-  }
-  if (schema.items) assertClosedStructuredOutputSchema(schema.items, `${location}[]`);
-  for (const [index, value] of (schema.anyOf || []).entries()) {
-    assertClosedStructuredOutputSchema(value, `${location}.anyOf[${index}]`);
-  }
-}
-
-test("Demand Proposal schema is closed for Codex Structured Outputs", () => {
-  assertClosedStructuredOutputSchema(DEMAND_PROPOSAL_SCHEMA);
-  const impactActions = DEMAND_PROPOSAL_SCHEMA
-    .properties.requirements.items.properties.impactActions;
-  assert.equal(impactActions.type, "array");
-  assert.equal(impactActions.items.additionalProperties, false);
-});
-
-test("Codex project planner uses the Codex Runtime with read-only structured output", async () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "9codex-planner-test-"));
+test("Codex project planner uses plain JSON plus local validation", async () => {
+  const root = os.tmpdir();
   const calls = [];
   const worker = { id: "planner", sessionId: "planner-thread" };
   const codexRuntime = {
@@ -113,14 +85,41 @@ test("Codex project planner uses the Codex Runtime with read-only structured out
   assert.equal(calls[0].options.sandbox, "read-only");
   assert.equal(calls[0].options.env.SECRET, undefined);
   assert.equal(calls[0].options.env.CODEX_HOME, "/codex-home");
-  assert.equal(calls[0].options.extraArgs[0], "--output-schema");
-  assert.equal(fs.existsSync(calls[0].options.extraArgs[1]), false);
+  assert.equal(calls[0].options.extraArgs, undefined);
+  assert.match(calls[0].prompt, /Return only one valid JSON object/);
   assert.deepEqual(calls.at(-1), { closed: "planner" });
-  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test("Planner rejects invalid JSON locally", async () => {
+  const root = os.tmpdir();
+  const worker = { id: "invalid-planner", sessionId: "invalid-session" };
+  const planner = createTeamPlanner({
+    codexRuntime: {
+      createWorker() { return worker; },
+      async waitWorker() { return { ok: true, code: 0 }; },
+      readEvents() {
+        return [{
+          type: "run.output",
+          data: { type: "run.output", text: "not-json" },
+        }];
+      },
+      async closeWorker() {},
+    },
+    harnessRuntime: { createWorker() { throw new Error("unused"); } },
+  });
+  await assert.rejects(
+    planner({
+      content: "Implement login",
+      classification: { type: "new_requirement" },
+      taskGroup: { workspace: root, runtime_kind: "codex" },
+      existingWorkItems: [],
+    }),
+    /planner returned invalid JSON/,
+  );
 });
 
 test("Harness project planner uses only the Harness Runtime", async () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "9codex-harness-planner-test-"));
+  const root = os.tmpdir();
   const calls = [];
   const worker = { id: "harness-planner", sessionId: "harness-session" };
   const planner = createTeamPlanner({
@@ -160,8 +159,7 @@ test("Harness project planner uses only the Harness Runtime", async () => {
   });
 
   assert.equal(plan.requirements[0].title, "Login");
-  assert.match(calls[0][1], /"required":\["summary","questions","requirements"\]/);
-  assert.match(calls[0][1], /"requirementId":\{"anyOf":/);
+  assert.match(calls[0][1], /Return only one valid JSON object/);
   assert.equal(calls[0][2].extraArgs, undefined);
   assert.equal(calls[0][2].env.SECRET, undefined);
   assert.equal(calls[0][2].env.CODEX_HOME, undefined);
@@ -170,5 +168,4 @@ test("Harness project planner uses only the Harness Runtime", async () => {
     ["events", "harness-planner"],
     ["close", "harness-planner"],
   ]);
-  fs.rmSync(root, { recursive: true, force: true });
 });
