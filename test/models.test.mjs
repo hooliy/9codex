@@ -164,7 +164,7 @@ test("rejects invalid optional output limits with the model id", async () => {
   }
 });
 
-test("uses automatic protocol negotiation when an OpenAI model list has no protocol metadata", async () => {
+test("defaults models without protocol metadata to Chat compatibility", async () => {
   const config = {
     upstream: {
       base_url: "https://router.example/v1",
@@ -181,7 +181,7 @@ test("uses automatic protocol negotiation when an OpenAI model list has no proto
     }), { status: 200, headers: { "content-type": "application/json" } }),
   });
 
-  assert.equal(rows[0].protocol, "auto");
+  assert.equal(rows[0].protocol, "chat_compat");
   assert.equal(rows[1].protocol, "chat_compat");
 });
 

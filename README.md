@@ -152,11 +152,12 @@ Each model is profiled from `/v1/models`. 9codex supports:
 
 - native Responses
 - Responses-compatible request repair
-- Chat Completions fallback
-- automatic negotiation when protocol metadata is absent
+- Chat Completions translation
+- Chat as the fixed default when protocol metadata is absent
 
 The local daemon translates requests and streaming events while keeping the
-Codex-facing endpoint Responses-compatible.
+Codex-facing endpoint Responses-compatible. It never probes an unverified
+Responses endpoint at runtime.
 
 ## Image generation
 

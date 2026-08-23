@@ -619,17 +619,13 @@ test("routes Chat-compatible models through chat/completions and emits Responses
   assert.match(text, /event: response\.completed/);
 });
 
-test("automatically retries a model through Chat when its Responses endpoint is incompatible", async (t) => {
+test("routes an unspecified protocol directly through Chat without Responses probing", async (t) => {
   const requests = [];
   const upstream = http.createServer(async (req, res) => {
     const chunks = [];
     for await (const chunk of req) chunks.push(chunk);
     requests.push({ url: req.url, body: JSON.parse(Buffer.concat(chunks).toString("utf8")) });
-    if (req.url === "/v1/responses") {
-      res.writeHead(400, { "content-type": "application/json" });
-      res.end(JSON.stringify({ error: { message: "Responses schema unsupported" } }));
-      return;
-    }
+    assert.equal(req.url, "/v1/chat/completions");
     res.writeHead(200, { "content-type": "text/event-stream" });
     res.end('data: {"id":"chat_2","created":10,"model":"raw/model","choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n');
   });
@@ -638,7 +634,7 @@ test("automatically retries a model through Chat when its Responses endpoint is 
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "9codex-gateway-test-"));
   const paths = resolvePaths(home);
   const config = gatewayConfig(upstreamUrl);
-  await routingFixture(paths, config, "auto");
+  await routingFixture(paths, config, "chat_compat");
   const gateway = createGateway(config, paths);
   const gatewayUrl = await listen(gateway);
   t.after(() => new Promise((resolve) => gateway.close(resolve)));
@@ -656,10 +652,10 @@ test("automatically retries a model through Chat when its Responses endpoint is 
   const responseText = await response.text();
 
   assert.equal(response.status, 200);
-  assert.deepEqual(requests.map((request) => request.url), ["/v1/responses", "/v1/chat/completions"]);
+  assert.deepEqual(requests.map((request) => request.url), ["/v1/chat/completions"]);
   assert.equal(requests.every((request) => !Object.hasOwn(request.body, "service_tier")), true);
-  assert.equal(requests[1].body.stream, true);
-  assert.equal("stream_options" in requests[1].body, false);
+  assert.equal(requests[0].body.stream, true);
+  assert.equal("stream_options" in requests[0].body, false);
   assert.match(responseText, /response\.completed/);
 });
 
@@ -680,7 +676,7 @@ test("surfaces a long-term upstream quota reason without letting Codex replace i
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "9codex-gateway-test-"));
   const paths = resolvePaths(home);
   const config = gatewayConfig(upstreamUrl);
-  await routingFixture(paths, config, "auto");
+  await routingFixture(paths, config, "chat_compat");
   const gateway = createGateway(config, paths);
   const gatewayUrl = await listen(gateway);
   t.after(() => new Promise((resolve) => gateway.close(resolve)));
@@ -713,7 +709,7 @@ test("keeps temporary upstream rate limits retryable", async (t) => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "9codex-gateway-test-"));
   const paths = resolvePaths(home);
   const config = gatewayConfig(upstreamUrl);
-  await routingFixture(paths, config, "auto");
+  await routingFixture(paths, config, "chat_compat");
   const gateway = createGateway(config, paths);
   const gatewayUrl = await listen(gateway);
   t.after(() => new Promise((resolve) => gateway.close(resolve)));

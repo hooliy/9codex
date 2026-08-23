@@ -96,7 +96,7 @@ The client sends `If-None-Match: "<current revision>"`; return HTTP 304 when unc
       "id": "yuanpi-auto",
       "display_name": "YuanPi Auto",
       "enabled": true,
-      "protocol": "auto",
+      "protocol": "chat_compat",
       "context_window": 128000,
       "capabilities": {
         "streaming": true,
@@ -129,12 +129,11 @@ The client sends `If-None-Match: "<current revision>"`; return HTTP 304 when unc
 }
 ```
 
-`protocol` supports `responses_native`, `responses_compat`, `chat_compat`, and `auto`.
-Use an explicit protocol when the server has verified the model. `auto` first preserves the
-Responses request and retries through the Chat Completions adapter only when the Responses
-endpoint rejects the protocol. Chat `stream_options` are omitted by default because several
-OpenAI-compatible routers reject them; enable `chat_stream_options_include_usage` only for a
-verified model.
+`protocol` supports `responses_native`, `responses_compat`, and `chat_compat`.
+Models without an explicit verified protocol are fixed to `chat_compat`; 9codex never probes
+an upstream Responses endpoint with an unverified request. Chat `stream_options` are omitted
+by default because several OpenAI-compatible routers reject them; enable
+`chat_stream_options_include_usage` only for a verified model.
 
 ## Heartbeat
 
