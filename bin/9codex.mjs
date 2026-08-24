@@ -15,7 +15,7 @@ import {
   releaseUpdateLock,
   waitForGatewayIdle,
 } from "../lib/auto-update.mjs";
-import { launchCodexDesktop, terminateWindowsCodex } from "../lib/codex-launch.mjs";
+import { launchCodexDesktop } from "../lib/codex-launch.mjs";
 import {
   defaultConfig,
   loadConfig,
@@ -195,10 +195,7 @@ async function waitForChild(child, label) {
   });
 }
 
-async function launchCodex(config, workspace, { restart = false, bridge = true } = {}) {
-  if (restart && process.platform === "win32" && !bridge) {
-    await waitForChild(terminateWindowsCodex(), "Codex shutdown");
-  }
+async function launchCodex(config, workspace, { bridge = true } = {}) {
   const child = launchCodexDesktop({
     config,
     paths,
@@ -206,7 +203,6 @@ async function launchCodex(config, workspace, { restart = false, bridge = true }
     ...(process.env.CODEX_CLI_PATH ? { command: process.env.CODEX_CLI_PATH } : {}),
     platform: process.platform,
     interactiveSessionBridge: bridge,
-    restart,
     nodePath: process.execPath,
     cliPath,
   });
@@ -234,8 +230,8 @@ try {
     }
     case "install": {
       const result = await install(loadConfig(paths));
-      await launchCodex(result.config || loadConfig(paths), process.cwd(), { restart: true });
-      console.log(JSON.stringify({ installed: true, codex_restarted: true, ...result }, null, 2));
+      await launchCodex(result.config || loadConfig(paths), process.cwd());
+      console.log(JSON.stringify({ installed: true, codex_opened: true, ...result }, null, 2));
       break;
     }
     case "sync": {
@@ -276,14 +272,12 @@ try {
       repairLocalModelState(paths, loadConfig(paths));
       await restartService(paths);
       if (!(await waitForHealth(loadConfig(paths)))) throw new Error("9codex service restart failed");
-      await launchCodex(loadConfig(paths), process.cwd(), { restart: true });
-      console.log("9codex service and Codex restarted.");
+      await launchCodex(loadConfig(paths), process.cwd());
+      console.log("9codex service restarted; Codex opened without terminating the existing session.");
       break;
     case "codex-launch-worker": {
-      const restart = args[0] === "--restart";
-      const workspace = restart ? args[1] : args[0];
+      const workspace = args[0];
       await launchCodex(loadConfig(paths), workspace || paths.home, {
-        restart,
         bridge: false,
       });
       break;

@@ -2,12 +2,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
-  CODEX_AUTH_ENV,
   buildWindowsInteractiveLaunch,
   buildCodexLaunch,
   launchCodexDesktop,
   resolveCodexCommand,
-  terminateWindowsCodex,
 } from "../lib/codex-launch.mjs";
 
 const input = {
@@ -36,7 +34,8 @@ test("builds non-persistent Codex Desktop overrides with fast mode and MCP", () 
     "-c", 'model_providers.9codex.base_url="http://127.0.0.1:10101/v1"',
     "-c", 'model_providers.9codex.wire_api="responses"',
     "-c", "model_providers.9codex.supports_websockets=false",
-    "-c", `model_providers.9codex.env_key="${CODEX_AUTH_ENV}"`,
+    "-c", 'model_providers.9codex.auth.command="/opt/bin/node"',
+    "-c", 'model_providers.9codex.auth.args=["/opt/lib/9codex/bin/9codex.mjs","auth-token"]',
     "-c", 'service_tier="priority"',
     "-c", "features.multi_agent=true",
     "-c", 'multi_agent_mode="proactive"',
@@ -49,13 +48,13 @@ test("builds non-persistent Codex Desktop overrides with fast mode and MCP", () 
     "-c", 'mcp_servers.9codex.default_tools_approval_mode="approve"',
     "/work/project",
   ]);
-  assert.equal(launch.options.env[CODEX_AUTH_ENV], "secret-token");
   assert.equal(launch.options.env.PATH, "/opt/bin");
   assert.equal(launch.options.shell, false);
   assert.equal(launch.options.stdio, "inherit");
 
   const argv = launch.args.join(" ");
   assert.doesNotMatch(argv, /secret-token/);
+  assert.doesNotMatch(argv, /env_key|requires_openai_auth/);
   assert.doesNotMatch(
     argv,
     /model_reasoning_effort|model_verbosity|model_reasoning_summary/,
@@ -105,15 +104,22 @@ test("launches through injected spawn and derives daemon values from config", ()
     'mcp_servers.9codex.env={"NINECODEX_HOME"="/home/test"}',
   ));
   assert.equal(calls[0].options.env.HOME, "/home/test");
-  assert.equal(calls[0].options.env[CODEX_AUTH_ENV], "local-secret");
   assert.doesNotMatch(calls[0].args.join(" "), /local-secret/);
+  assert.ok(calls[0].args.includes(
+    'model_providers.9codex.auth.command="custom-node"',
+  ));
+  assert.ok(calls[0].args.includes(
+    'model_providers.9codex.auth.args=["/app/bin/9codex.mjs","auth-token"]',
+  ));
 });
 
-test("requires authentication without persisting or exposing it", () => {
-  assert.throws(
-    () => buildCodexLaunch({ ...input, token: "", env: {} }),
-    new RegExp(`env\\.${CODEX_AUTH_ENV} must be a non-empty string`),
-  );
+test("does not depend on AppX environment inheritance for authentication", () => {
+  const launch = buildCodexLaunch({ ...input, token: "", env: {} });
+
+  assert.ok(launch.args.includes(
+    'model_providers.9codex.auth.args=["/opt/lib/9codex/bin/9codex.mjs","auth-token"]',
+  ));
+  assert.deepEqual(launch.options.env, {});
 });
 
 test("prefers the packaged Codex executable without changing user config", () => {
@@ -164,7 +170,6 @@ test("bridges Windows desktop launch into the interactive user session", () => {
     command: "C:\\Users\\m\\AppData\\Local\\OpenAI\\Codex\\bin\\new\\codex.exe",
     nodePath: "C:\\Program Files\\nodejs\\node.exe",
     cliPath: "C:\\Users\\m\\AppData\\Roaming\\npm\\node_modules\\@hooliy\\9codex\\bin\\9codex.mjs",
-    restart: true,
   });
 
   assert.equal(launch.command, "powershell.exe");
@@ -173,24 +178,8 @@ test("bridges Windows desktop launch into the interactive user session", () => {
   assert.match(launch.args.at(-1), /Start-ScheduledTask/);
   assert.match(launch.args.at(-1), /Unregister-ScheduledTask/);
   assert.match(launch.args.at(-1), /codex-launch-worker/);
-  assert.match(launch.args.at(-1), /--restart/);
+  assert.doesNotMatch(launch.args.at(-1), /--restart|Stop-Process|taskkill/);
   assert.match(launch.args.at(-1), /LastRunTime -eq \$before/);
   assert.doesNotMatch(launch.args.at(-1), /LastRunTime -lt \$started/);
   assert.doesNotMatch(launch.args.join(" "), /secret-token/);
-});
-
-test("Windows Codex shutdown is scoped to the installed Codex package", () => {
-  const calls = [];
-  terminateWindowsCodex({
-    spawn(command, args, options) {
-      calls.push({ command, args, options });
-      return {};
-    },
-  });
-
-  assert.equal(calls[0].command, "powershell.exe");
-  assert.match(calls[0].args.at(-1), /Get-AppxPackage -Name OpenAI\.Codex/);
-  assert.match(calls[0].args.at(-1), /StartsWith\(\$root/);
-  assert.match(calls[0].args.at(-1), /ChatGPT\.exe/);
-  assert.match(calls[0].args.at(-1), /codex\.exe/);
 });
