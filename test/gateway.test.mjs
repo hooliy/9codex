@@ -171,7 +171,7 @@ test("gateway routes from one latest committed config/catalog/modelMap snapshot"
   });
 });
 
-test("native Responses routing strips originator while preserving supported identity headers", async (t) => {
+test("native Responses routing strips client identity while preserving correlation headers", async (t) => {
   let captured;
   const upstream = http.createServer(async (req, res) => {
     const chunks = [];
@@ -252,7 +252,7 @@ test("native Responses routing strips originator while preserving supported iden
   assert.equal(captured.url, "/v1/responses");
   assert.equal(captured.authorization, "Bearer upstream-secret");
   assert.equal(captured.encoding, undefined);
-  assert.equal(captured.userAgent, "codex_cli_rs/0.146.1 (Mac OS 15.6.0; arm64)");
+  assert.equal(captured.userAgent, "node");
   assert.equal(captured.originator, undefined);
   assert.equal(captured.sessionId, "session-1");
   assert.equal(captured.threadId, "thread-1");
