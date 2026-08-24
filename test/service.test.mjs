@@ -173,6 +173,12 @@ test("Windows uninstall also terminates a validated recorded daemon", async () =
   });
 
   assert.equal(calls.some(([file, args]) => file === "powershell.exe" && args.at(-1).includes("recordedPid = 7654")), true);
+  const environmentCleanup = calls.find(([file, args]) =>
+    file === "powershell.exe"
+    && args.at(-1).includes("SetEnvironmentVariable('CODEX_CLI_PATH', $null, 'User')"),
+  );
+  assert.ok(environmentCleanup);
+  assert.match(environmentCleanup[1].at(-1), /codex-wrapper-/);
 });
 
 test("Windows install terminates stale daemon loops and rotates the daemon log before registering", async () => {

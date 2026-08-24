@@ -17,9 +17,11 @@ sub-agents in parallel. There is no external task orchestrator and no 9codex UI.
 - Codex model caches or native model metadata
 - Codex update files or renderer DOM
 
-`9codex app` applies integration settings only to the launched process through
-Codex CLI `-c` overrides. Closing that process removes every override. Existing
-Codex history remains in the original `CODEX_HOME`.
+`9codex app` generates a private wrapper in `~/.9codex` and points the current
+Windows user's `CODEX_CLI_PATH` to it. The wrapper injects Codex CLI `-c`
+overrides only when Desktop starts `app-server`; it never edits Codex files.
+Uninstall removes that environment value only when 9codex still owns it.
+Existing Codex history remains in the original `CODEX_HOME`.
 
 ## Requirements
 
@@ -45,10 +47,10 @@ Launch Codex through the daemon:
 9codex app /absolute/workspace/path
 ```
 
-The launch is non-persistent. It supplies only process-scoped provider, model
-catalog, MCP, native multi-agent, and Fast settings. User choices such as
-`model_reasoning_effort`, `model_verbosity`, and `model_reasoning_summary` remain
-unchanged.
+The launch is process-scoped. It supplies the 9codex provider, live model
+catalog, MCP, native multi-agent, Fast, high reasoning, high verbosity, and
+detailed reasoning summary. A running Desktop process is restarted once only
+when its app-server is not already using the 9codex catalog.
 
 ## Default execution policy
 
@@ -120,7 +122,8 @@ needed because Codex files were never changed.
 
 The daemon checks npm every five minutes. A newer version remains queued while
 the gateway has active requests. Unknown activity fails closed. Installation
-restarts only the 9codex daemon; it never terminates or restarts Codex.
+restarts only the 9codex daemon. `9codex app` may restart Codex Desktop once to
+switch an existing app-server to the 9codex integration.
 
 ## Image generation
 
@@ -142,8 +145,8 @@ See `docs/control-plane-api.md`.
 - Never commit `~/.9codex/config.json`.
 - Never paste API keys into logs or issues.
 - Diagnostics redact credentials.
-- Codex launch authentication is passed through an environment variable, never
-  command-line arguments.
+- Codex launch authentication is resolved by a local command; the bearer token
+  never appears in process command-line arguments.
 - The daemon listens only on loopback.
 - Production and irreversible actions remain subject to Codex native safety and
   approval behavior.

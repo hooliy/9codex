@@ -200,7 +200,6 @@ async function launchCodex(config, workspace, { bridge = true } = {}) {
     config,
     paths,
     workspace,
-    ...(process.env.CODEX_CLI_PATH ? { command: process.env.CODEX_CLI_PATH } : {}),
     platform: process.platform,
     interactiveSessionBridge: bridge,
     nodePath: process.execPath,
@@ -275,13 +274,6 @@ try {
       await launchCodex(loadConfig(paths), process.cwd());
       console.log("9codex service restarted; Codex opened without terminating the existing session.");
       break;
-    case "codex-launch-worker": {
-      const workspace = args[0];
-      await launchCodex(loadConfig(paths), workspace || paths.home, {
-        bridge: false,
-      });
-      break;
-    }
     case "auth-token":
       process.stdout.write(`${loadConfig(paths).local.token}\n`);
       break;
