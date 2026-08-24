@@ -266,21 +266,21 @@ test("catalog fails when no usable model metadata remains", () => {
   );
 });
 
-test("catalog rejects Chat-only models instead of silently dropping Codex tools", () => {
-  assert.throws(
-    () => buildCatalog({
-      upstream: { default_model: "chat-only" },
-      models: {
-        available: [{
-          id: "chat-only",
-          protocol: "chat_compat",
-          context_window: 64_000,
-          capabilities: { tools: true },
-        }],
-      },
-    }),
-    /does not support the Responses API required by Codex/,
-  );
+test("catalog rewrites legacy protocols to the native Responses route", () => {
+  const result = buildCatalog({
+    upstream: { default_model: "chat-only" },
+    models: {
+      available: [{
+        id: "chat-only",
+        protocol: "chat_compat",
+        context_window: 64_000,
+        capabilities: { tools: true },
+      }],
+    },
+  });
+
+  assert.equal(result.models.length, 1);
+  assert.equal(result.protocols["chat-only"].protocol, "responses_native");
 });
 
 test("catalog exposes only explicitly selected models", () => {

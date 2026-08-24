@@ -7,6 +7,7 @@ import test from "node:test";
 import { defaultConfig, loadConfig } from "../lib/config.mjs";
 import {
   recoverModelState,
+  repairLocalModelState,
   reconcileModelState,
   validateAuthoritativeModels,
   validateModelState,
@@ -294,23 +295,17 @@ test("validateAuthoritativeModels rejects empty, duplicate, and invalid token li
   );
 });
 
-test("keeps Responses models while removing Chat-only models", () => {
-  assert.deepEqual(
-    validateAuthoritativeModels([
-      { ...model("chat-only"), protocol: "chat_compat" },
-      model("responses-model"),
-    ]).map((row) => row.id),
-    ["responses-model"],
-  );
-  assert.throws(
-    () => validateAuthoritativeModels([
-      { ...model("chat-only"), protocol: "chat_compat" },
-    ]),
-    /No usable model metadata available/,
-  );
+test("rewrites legacy model protocols without emptying the catalog", () => {
+  const rows = validateAuthoritativeModels([
+    { ...model("legacy-model"), protocol: "chat_compat" },
+  ]);
+
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].id, "legacy-model");
+  assert.equal(rows[0].protocol, "responses_native");
 });
 
-test("reconcile keeps a non-empty Responses catalog when the upstream also lists Chat models", async () => {
+test("reconcile rewrites every upstream model to the native Responses route", async () => {
   const { paths, config } = fixture();
   config.upstream.default_model = "chat-only";
 
@@ -321,9 +316,26 @@ test("reconcile keeps a non-empty Responses catalog when the upstream also lists
     ],
   });
 
-  assert.equal(result.config.upstream.default_model, "responses-model");
-  assert.deepEqual(result.config.models.available.map((row) => row.id), ["responses-model"]);
-  assert.deepEqual(result.built.models.map((row) => row.slug), ["responses-model"]);
+  assert.equal(result.config.upstream.default_model, "chat-only");
+  assert.deepEqual(result.config.models.available.map((row) => row.id), ["chat-only", "responses-model"]);
+  assert.deepEqual(result.built.models.map((row) => row.slug), ["chat-only", "responses-model"]);
+  assert.equal(result.built.protocols["chat-only"].protocol, "responses_native");
+});
+
+test("repairs a legacy persisted model state locally without losing settings", async () => {
+  const { paths, config } = fixture();
+  const legacy = { ...model(), protocol: "chat_compat" };
+  await reconcileModelState(paths, config, { authoritativeModels: [legacy] });
+  const persisted = loadConfig(paths);
+  persisted.models.available[0].protocol = "chat_compat";
+  fs.writeFileSync(paths.config, `${JSON.stringify(persisted, null, 2)}\n`);
+
+  const repaired = repairLocalModelState(paths, persisted);
+
+  assert.equal(repaired.models.available.length, 1);
+  assert.equal(repaired.models.available[0].protocol, "responses_native");
+  assert.equal(repaired.upstream.api_key, config.upstream.api_key);
+  assert.equal(validateModelState(paths, repaired), true);
 });
 
 test("skips upstream aliases without invented context limits", () => {

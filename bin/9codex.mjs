@@ -27,7 +27,7 @@ import {
   enableAllModels,
   selectEnabledModels,
 } from "../lib/models.mjs";
-import { reconcileModelState } from "../lib/model-state.mjs";
+import { reconcileModelState, repairLocalModelState } from "../lib/model-state.mjs";
 import { runMcpServer } from "../lib/mcp.mjs";
 import { resolvePaths } from "../lib/paths.mjs";
 import { installService, restartService, uninstallService } from "../lib/service.mjs";
@@ -255,6 +255,7 @@ try {
       break;
     }
     case "restart":
+      repairLocalModelState(paths, loadConfig(paths));
       await restartService(paths);
       if (!(await waitForHealth(loadConfig(paths)))) throw new Error("9codex service restart failed");
       console.log("9codex service restarted.");

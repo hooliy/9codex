@@ -151,6 +151,32 @@ test("rolls back to the prior package version when the new service fails health 
   ]);
 });
 
+test("reports the original activation failure after a successful rollback", async () => {
+  let activation = 0;
+  await assert.rejects(
+    () => runStagedUpdate({
+      package: "@hooliy/9codex",
+      version: "3.0.1",
+      channel: "stable",
+      registry: "https://registry.npmjs.org",
+    }, {
+      currentVersion: "3.0.0",
+      policy,
+      install: async (spec) => ({ cliPath: `/installed/${spec}/bin/9codex.mjs` }),
+      activate: async () => {
+        activation += 1;
+        if (activation === 1) throw new Error("The operation was aborted due to timeout");
+      },
+      health: async () => true,
+    }),
+    (error) => (
+      error.code === "update_health_failed"
+      && /The operation was aborted due to timeout/.test(error.message)
+      && /rolled back/.test(error.message)
+    ),
+  );
+});
+
 test("resolves the latest stable npm version when update has no explicit version", async () => {
   const requests = [];
   const version = await resolveLatestVersion(policy, {

@@ -155,6 +155,7 @@ test("daemon runs only the background gateway", async () => {
   const controller = new AbortController();
   const running = runDaemon(paths, {
     signal: controller.signal,
+    repairLocalModelState: (_paths, active) => active,
     validateModelState: () => true,
     createGateway: () => server,
     startAutomaticUpdates: () => ({ close() {} }),

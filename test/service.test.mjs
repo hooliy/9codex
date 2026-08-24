@@ -34,9 +34,11 @@ test("Windows install registers a supervised native GUI launcher without a conso
   assert.match(registration, /9codex-service-launcher\.exe/);
   assert.match(registration, /9codex\.mjs/);
   assert.match(registration, /--redirect-logs/);
-  assert.match(registration, /RestartCount 999/);
+  assert.match(registration, /RestartCount 3/);
   assert.match(registration, /RestartInterval/);
-  assert.match(registration, /RepetitionInterval/);
+  assert.doesNotMatch(registration, /RepetitionInterval/);
+  assert.doesNotMatch(registration, /recoveryTrigger/);
+  assert.match(registration, /-Trigger \$logonTrigger/);
   assert.match(registration, /LogonType Interactive/);
   assert.doesNotMatch(registration, /while \(\$true\)/);
   assert.doesNotMatch(registration, /powershell\.exe/);

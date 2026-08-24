@@ -164,7 +164,7 @@ test("rejects invalid optional output limits with the model id", async () => {
   }
 });
 
-test("does not expose Chat-compatible models to Codex", async () => {
+test("rewrites legacy model protocols to the native Responses route", async () => {
   const config = {
     upstream: {
       base_url: "https://router.example/v1",
@@ -182,8 +182,28 @@ test("does not expose Chat-compatible models to Codex", async () => {
   });
 
   assert.equal(rows[0].protocol, "responses_native");
-  assert.equal(rows.length, 1);
+  assert.equal(rows[1].protocol, "responses_native");
+  assert.equal(rows.length, 2);
   assert.equal(rows[0].id, "yuanpi-auto");
+});
+
+test("model refresh does not impose an artificial request deadline", async () => {
+  let request;
+  await refreshUpstreamModels({
+    upstream: {
+      base_url: "https://router.example/v1",
+      api_key: "secret",
+    },
+  }, {
+    fetchImpl: async (_url, options) => {
+      request = options;
+      return new Response(JSON.stringify({
+        data: [{ id: "model-a", context_window: 200_000 }],
+      }));
+    },
+  });
+
+  assert.equal(Object.hasOwn(request, "signal"), false);
 });
 
 test("selects a model allow-list without hard-coding the upstream catalog", () => {
