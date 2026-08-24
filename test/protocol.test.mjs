@@ -122,6 +122,16 @@ test("converts Responses instructions, messages, tools, and tool results to Chat
   assert.equal("stream_options" in result, false);
 });
 
+test("preserves Responses web search tools for compatible Chat upstreams", () => {
+  const result = responsesToChatRequest({
+    model: "upstream-model",
+    input: "Search current news",
+    tools: [{ type: "web_search", external_web_access: true }],
+  });
+
+  assert.deepEqual(result.tools, [{ type: "web_search", external_web_access: true }]);
+});
+
 test("drops orphaned function call outputs instead of creating invalid Chat tool messages", () => {
   const result = responsesToChatRequest({
     model: "upstream-model",

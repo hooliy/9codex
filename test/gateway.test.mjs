@@ -619,6 +619,48 @@ test("routes Chat-compatible models through chat/completions and emits Responses
   assert.match(text, /event: response\.completed/);
 });
 
+test("preserves web search tools when routing Responses through Chat", async (t) => {
+  let capturedBody;
+  const upstream = http.createServer(async (req, res) => {
+    const chunks = [];
+    for await (const chunk of req) chunks.push(chunk);
+    capturedBody = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+    res.writeHead(200, { "content-type": "text/event-stream" });
+    res.end('data: {"id":"chat_search","created":10,"model":"raw/model","choices":[{"delta":{"content":"current result"},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n');
+  });
+  const upstreamUrl = await listen(upstream);
+  t.after(() => new Promise((resolve) => upstream.close(resolve)));
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "9codex-gateway-test-"));
+  const paths = resolvePaths(home);
+  const config = gatewayConfig(upstreamUrl);
+  await routingFixture(paths, config, "chat_compat");
+  const gateway = createGateway(config, paths);
+  const gatewayUrl = await listen(gateway);
+  t.after(() => new Promise((resolve) => gateway.close(resolve)));
+
+  const response = await fetch(`${gatewayUrl}/v1/responses`, {
+    method: "POST",
+    headers: { authorization: "Bearer 9codex_local_test", "content-type": "application/json" },
+    body: JSON.stringify({
+      model: "raw/model",
+      input: "Search current news",
+      tools: [
+        { type: "web_search", external_web_access: true },
+        {
+          type: "function",
+          name: "read_file",
+          parameters: { type: "object", properties: {} },
+        },
+      ],
+      stream: true,
+    }),
+  });
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(capturedBody.tools[0], { type: "web_search", external_web_access: true });
+  assert.equal(capturedBody.tools[1].function.name, "read_file");
+});
+
 test("routes an unspecified protocol directly through Chat without Responses probing", async (t) => {
   const requests = [];
   const upstream = http.createServer(async (req, res) => {
