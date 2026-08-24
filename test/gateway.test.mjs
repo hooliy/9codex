@@ -294,6 +294,13 @@ test("native Responses routing strips client identity while preserving correlati
       },
       { type: "function_call_output", call_id: "call_empty", output: "stale" },
     ],
+    tools: [
+      { type: "custom", name: "apply_patch", format: { type: "grammar" } },
+      { type: "namespace", name: "multi_agent_v1", tools: [] },
+      { type: "namespace", name: "mcp__9codex", tools: [] },
+      { type: "web_search", external_web_access: true },
+    ],
+    parallel_tool_calls: true,
     future_field: { nested: [1, 2, 3] },
   };
 
@@ -336,8 +343,69 @@ test("native Responses routing strips client identity while preserving correlati
     { type: "function_call_output", call_id: "call_valid", output: "contents" },
     { type: "future_input_item", payload: { keep: true } },
   ]);
+  assert.deepEqual(captured.body.tools, body.tools);
+  assert.equal(captured.body.parallel_tool_calls, true);
   assert.deepEqual(captured.body.future_field, { nested: [1, 2, 3] });
   assert.match(await response.text(), /response\.completed/);
+});
+
+test("native Responses bridges the 9codex MCP namespace for flat-tool upstreams", async (t) => {
+  let capturedBody;
+  const upstream = http.createServer(async (req, res) => {
+    const chunks = [];
+    for await (const chunk of req) chunks.push(chunk);
+    capturedBody = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+    res.writeHead(200, { "content-type": "text/event-stream" });
+    res.write("event: response.output_item.added\n");
+    res.write("data: {\"type\":\"response.output_item.added\",\"item\":{\"type\":\"function_call\",\"name\":\"mcp__9codex__image_gen\",\"arguments\":\"{}\",\"call_id\":\"call_image\"}}\n\n");
+    res.end("event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"output\":[{\"type\":\"function_call\",\"name\":\"mcp__9codex__image_gen\",\"arguments\":\"{}\",\"call_id\":\"call_image\"}]}}\n\n");
+  });
+  const upstreamUrl = await listen(upstream);
+  t.after(() => new Promise((resolve) => upstream.close(resolve)));
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "9codex-gateway-test-"));
+  const paths = resolvePaths(home);
+  const config = gatewayConfig(upstreamUrl);
+  await routingFixture(paths, config);
+  const gateway = createGateway(config, paths);
+  const gatewayUrl = await listen(gateway);
+  t.after(() => new Promise((resolve) => gateway.close(resolve)));
+
+  const response = await fetch(`${gatewayUrl}/v1/responses`, {
+    method: "POST",
+    headers: {
+      authorization: "Bearer 9codex_local_test",
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      model: "raw/model",
+      input: [{
+        type: "function_call",
+        namespace: "mcp__9codex",
+        name: "image_gen",
+        arguments: "{}",
+        call_id: "call_previous",
+      }],
+      tools: [{
+        type: "namespace",
+        name: "mcp__9codex",
+        tools: [{
+          type: "function",
+          name: "image_gen",
+          description: "Generate an image.",
+          parameters: { type: "object", properties: {} },
+        }],
+      }],
+    }),
+  });
+
+  assert.equal(capturedBody.tools[0].type, "function");
+  assert.equal(capturedBody.tools[0].name, "mcp__9codex__image_gen");
+  assert.equal(capturedBody.input[0].namespace, undefined);
+  assert.equal(capturedBody.input[0].name, "mcp__9codex__image_gen");
+  const output = await response.text();
+  assert.match(output, /"namespace":"mcp__9codex"/);
+  assert.match(output, /"name":"image_gen"/);
+  assert.doesNotMatch(output, /"name":"mcp__9codex__image_gen"/);
 });
 
 test("gateway forwards Responses request bodies larger than 64 MiB", async (t) => {
@@ -720,131 +788,6 @@ test("image generation removes service tier for every image model", async (t) =>
   assert.equal("service_tier" in capturedBody, false);
 });
 
-test("routes Chat-compatible models through chat/completions and emits Responses SSE", async (t) => {
-  let capturedUrl;
-  let capturedBody;
-  const upstream = http.createServer(async (req, res) => {
-    capturedUrl = req.url;
-    const chunks = [];
-    for await (const chunk of req) chunks.push(chunk);
-    capturedBody = JSON.parse(Buffer.concat(chunks).toString("utf8"));
-    res.writeHead(200, { "content-type": "text/event-stream" });
-    res.write('data: {"id":"chat_1","created":10,"model":"raw/model","choices":[{"delta":{"content":"hello"}}]}\n\n');
-    res.end('data: {"id":"chat_1","created":10,"model":"raw/model","choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}\n\ndata: [DONE]\n\n');
-  });
-  const upstreamUrl = await listen(upstream);
-  t.after(() => new Promise((resolve) => upstream.close(resolve)));
-  const home = fs.mkdtempSync(path.join(os.tmpdir(), "9codex-gateway-test-"));
-  const paths = resolvePaths(home);
-  const config = gatewayConfig(upstreamUrl);
-  config.upstream.default_model = "OpenAI/GPT-5.6-SOL";
-  await routingFixture(paths, config, "chat_compat");
-  const gateway = createGateway(config, paths);
-  const gatewayUrl = await listen(gateway);
-  t.after(() => new Promise((resolve) => gateway.close(resolve)));
-
-  const response = await fetch(`${gatewayUrl}/v1/responses`, {
-    method: "POST",
-    headers: { authorization: "Bearer 9codex_local_test", "content-type": "application/json" },
-    body: JSON.stringify({
-      model: "OpenAI/GPT-5.6-SOL",
-      service_tier: "default",
-      input: "hello",
-      stream: true,
-    }),
-  });
-  const text = await response.text();
-
-  assert.equal(capturedUrl, "/v1/chat/completions");
-  assert.equal(capturedBody.stream, true);
-  assert.equal(capturedBody.service_tier, "priority");
-  assert.equal("stream_options" in capturedBody, false);
-  assert.match(text, /event: response\.output_text\.delta/);
-  assert.match(text, /event: response\.completed/);
-});
-
-test("preserves web search tools when routing Responses through Chat", async (t) => {
-  let capturedBody;
-  const upstream = http.createServer(async (req, res) => {
-    const chunks = [];
-    for await (const chunk of req) chunks.push(chunk);
-    capturedBody = JSON.parse(Buffer.concat(chunks).toString("utf8"));
-    res.writeHead(200, { "content-type": "text/event-stream" });
-    res.end('data: {"id":"chat_search","created":10,"model":"raw/model","choices":[{"delta":{"content":"current result"},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n');
-  });
-  const upstreamUrl = await listen(upstream);
-  t.after(() => new Promise((resolve) => upstream.close(resolve)));
-  const home = fs.mkdtempSync(path.join(os.tmpdir(), "9codex-gateway-test-"));
-  const paths = resolvePaths(home);
-  const config = gatewayConfig(upstreamUrl);
-  await routingFixture(paths, config, "chat_compat");
-  const gateway = createGateway(config, paths);
-  const gatewayUrl = await listen(gateway);
-  t.after(() => new Promise((resolve) => gateway.close(resolve)));
-
-  const response = await fetch(`${gatewayUrl}/v1/responses`, {
-    method: "POST",
-    headers: { authorization: "Bearer 9codex_local_test", "content-type": "application/json" },
-    body: JSON.stringify({
-      model: "raw/model",
-      input: "Search current news",
-      tools: [
-        { type: "web_search", external_web_access: true },
-        {
-          type: "function",
-          name: "read_file",
-          parameters: { type: "object", properties: {} },
-        },
-      ],
-      stream: true,
-    }),
-  });
-
-  assert.equal(response.status, 200);
-  assert.deepEqual(capturedBody.tools[0], { type: "web_search", external_web_access: true });
-  assert.equal(capturedBody.tools[1].function.name, "read_file");
-});
-
-test("routes an unspecified protocol directly through Chat without Responses probing", async (t) => {
-  const requests = [];
-  const upstream = http.createServer(async (req, res) => {
-    const chunks = [];
-    for await (const chunk of req) chunks.push(chunk);
-    requests.push({ url: req.url, body: JSON.parse(Buffer.concat(chunks).toString("utf8")) });
-    assert.equal(req.url, "/v1/chat/completions");
-    res.writeHead(200, { "content-type": "text/event-stream" });
-    res.end('data: {"id":"chat_2","created":10,"model":"raw/model","choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n');
-  });
-  const upstreamUrl = await listen(upstream);
-  t.after(() => new Promise((resolve) => upstream.close(resolve)));
-  const home = fs.mkdtempSync(path.join(os.tmpdir(), "9codex-gateway-test-"));
-  const paths = resolvePaths(home);
-  const config = gatewayConfig(upstreamUrl);
-  await routingFixture(paths, config, "chat_compat");
-  const gateway = createGateway(config, paths);
-  const gatewayUrl = await listen(gateway);
-  t.after(() => new Promise((resolve) => gateway.close(resolve)));
-
-  const response = await fetch(`${gatewayUrl}/v1/responses`, {
-    method: "POST",
-    headers: { authorization: "Bearer 9codex_local_test", "content-type": "application/json" },
-    body: JSON.stringify({
-      model: "raw/model",
-      service_tier: "priority",
-      input: "hello",
-      stream: true,
-    }),
-  });
-  const responseText = await response.text();
-
-  assert.equal(response.status, 200);
-  assert.deepEqual(requests.map((request) => request.url), ["/v1/chat/completions"]);
-  assert.equal(requests.every((request) => !Object.hasOwn(request.body, "service_tier")), true);
-  assert.equal(requests[0].body.stream, true);
-  assert.equal("stream_options" in requests[0].body, false);
-  assert.match(responseText, /response\.completed/);
-});
-
 test("surfaces a long-term upstream quota reason without letting Codex replace it with retry exhaustion", async (t) => {
   const upstream = http.createServer((req, res) => {
     res.writeHead(429, {
@@ -862,7 +805,7 @@ test("surfaces a long-term upstream quota reason without letting Codex replace i
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "9codex-gateway-test-"));
   const paths = resolvePaths(home);
   const config = gatewayConfig(upstreamUrl);
-  await routingFixture(paths, config, "chat_compat");
+  await routingFixture(paths, config);
   const gateway = createGateway(config, paths);
   const gatewayUrl = await listen(gateway);
   t.after(() => new Promise((resolve) => gateway.close(resolve)));
@@ -895,7 +838,7 @@ test("keeps temporary upstream rate limits retryable", async (t) => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "9codex-gateway-test-"));
   const paths = resolvePaths(home);
   const config = gatewayConfig(upstreamUrl);
-  await routingFixture(paths, config, "chat_compat");
+  await routingFixture(paths, config);
   const gateway = createGateway(config, paths);
   const gatewayUrl = await listen(gateway);
   t.after(() => new Promise((resolve) => gateway.close(resolve)));

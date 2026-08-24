@@ -266,6 +266,23 @@ test("catalog fails when no usable model metadata remains", () => {
   );
 });
 
+test("catalog rejects Chat-only models instead of silently dropping Codex tools", () => {
+  assert.throws(
+    () => buildCatalog({
+      upstream: { default_model: "chat-only" },
+      models: {
+        available: [{
+          id: "chat-only",
+          protocol: "chat_compat",
+          context_window: 64_000,
+          capabilities: { tools: true },
+        }],
+      },
+    }),
+    /does not support the Responses API required by Codex/,
+  );
+});
+
 test("catalog exposes only explicitly selected models", () => {
   const result = buildCatalog({
     upstream: { default_model: "model-b" },

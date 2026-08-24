@@ -68,7 +68,7 @@ test("rejects invalid pending config without replacing active or last-good confi
       image_model: "image-a"
     },
     models: { namespace: "9codex", refresh_interval_seconds: 300 },
-    updates: { enabled: true, channel: "stable", auto_install: true },
+    updates: { enabled: true, channel: "stable", auto_install: false },
   };
   saveConfigAtomic(paths, valid);
   saveConfigAtomic(paths, { ...valid, upstream: { ...valid.upstream, default_model: "model-b" } });

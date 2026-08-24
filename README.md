@@ -84,10 +84,8 @@ context window.
 
 - Native Responses requests stay on Responses.
 - Responses-compatible models receive only declared compatibility repairs.
-- Chat-only models use Chat Completions translation.
-- Native Responses streams are forwarded byte-for-byte as they arrive.
-- Chat translation buffers only incomplete SSE event fragments required for
-  protocol conversion.
+- Chat-only models are rejected because Chat translation cannot preserve Codex native tools.
+- Native Responses streams pass through incrementally; only the `9codex` MCP namespace is bridged for flat-tool upstreams.
 - Upstream connections use Node's pooled `fetch` transport.
 - The loopback gateway requires a private bearer token.
 - `/healthz` reports readiness and active request count for safe daemon updates.

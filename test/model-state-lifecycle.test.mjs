@@ -294,6 +294,38 @@ test("validateAuthoritativeModels rejects empty, duplicate, and invalid token li
   );
 });
 
+test("keeps Responses models while removing Chat-only models", () => {
+  assert.deepEqual(
+    validateAuthoritativeModels([
+      { ...model("chat-only"), protocol: "chat_compat" },
+      model("responses-model"),
+    ]).map((row) => row.id),
+    ["responses-model"],
+  );
+  assert.throws(
+    () => validateAuthoritativeModels([
+      { ...model("chat-only"), protocol: "chat_compat" },
+    ]),
+    /No usable model metadata available/,
+  );
+});
+
+test("reconcile keeps a non-empty Responses catalog when the upstream also lists Chat models", async () => {
+  const { paths, config } = fixture();
+  config.upstream.default_model = "chat-only";
+
+  const result = await reconcileModelState(paths, config, {
+    authoritativeModels: [
+      { ...model("chat-only"), protocol: "chat_compat" },
+      model("responses-model"),
+    ],
+  });
+
+  assert.equal(result.config.upstream.default_model, "responses-model");
+  assert.deepEqual(result.config.models.available.map((row) => row.id), ["responses-model"]);
+  assert.deepEqual(result.built.models.map((row) => row.slug), ["responses-model"]);
+});
+
 test("skips upstream aliases without invented context limits", () => {
   assert.deepEqual(validateAuthoritativeModels([
     { id: "Fast" },

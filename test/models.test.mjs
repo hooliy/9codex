@@ -164,7 +164,7 @@ test("rejects invalid optional output limits with the model id", async () => {
   }
 });
 
-test("defaults models without protocol metadata to Chat compatibility", async () => {
+test("does not expose Chat-compatible models to Codex", async () => {
   const config = {
     upstream: {
       base_url: "https://router.example/v1",
@@ -181,8 +181,9 @@ test("defaults models without protocol metadata to Chat compatibility", async ()
     }), { status: 200, headers: { "content-type": "application/json" } }),
   });
 
-  assert.equal(rows[0].protocol, "chat_compat");
-  assert.equal(rows[1].protocol, "chat_compat");
+  assert.equal(rows[0].protocol, "responses_native");
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].id, "yuanpi-auto");
 });
 
 test("selects a model allow-list without hard-coding the upstream catalog", () => {
