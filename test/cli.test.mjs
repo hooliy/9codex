@@ -65,26 +65,7 @@ test("sync requires init before contacting a relay", () => {
   assert.match(result.stderr, /请先.*9codex init/);
 });
 
-test("skills-sync installs bundled orchestrator without configuration", () => {
-  const home = fs.mkdtempSync(path.join(os.tmpdir(), "9codex-cli-test-"));
-  const result = run(["skills-sync"], home);
-
-  assert.equal(result.status, 0, result.stderr);
-  assert.deepEqual(JSON.parse(result.stdout), {
-    skills: ["demand-intake", "orchestrator"],
-  });
-  assert.equal(
-    fs.existsSync(path.join(home, ".codex", "skills", "demand-intake", "SKILL.md")),
-    true,
-  );
-  assert.equal(
-    fs.existsSync(path.join(home, ".codex", "skills", "orchestrator", "SKILL.md")),
-    true,
-  );
-  assert.equal(fs.existsSync(path.join(home, ".9codex", "config.json")), false);
-});
-
-test("install and codex-restart attempt authoritative self-healing and fail clearly when upstream is unavailable", () => {
+test("install attempts authoritative self-healing and fails clearly when upstream is unavailable", () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "9codex-cli-test-"));
   const paths = resolvePaths(home);
   const config = defaultConfig();
@@ -92,9 +73,16 @@ test("install and codex-restart attempt authoritative self-healing and fail clea
   config.upstream.api_key = "secret";
   saveConfigAtomic(paths, config);
 
-  for (const command of ["install", "codex-restart"]) {
+  const result = run(["install"], home);
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /fetch failed/i);
+});
+
+test("removed UI and orchestrator commands are unavailable", () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "9codex-cli-test-"));
+  for (const command of ["skills-sync", "taskboard", "tasks", "codex-restart"]) {
     const result = run([command], home);
     assert.equal(result.status, 1, command);
-    assert.match(result.stderr, /fetch failed/i, command);
+    assert.match(result.stderr, /Commands:/, command);
   }
 });

@@ -22,9 +22,7 @@ function activationDependencies(overrides = {}) {
   return {
     installService: async () => {},
     restartService: async () => {},
-    waitForHealth: async () => ({ ok: true, ready: true }),
-    syncSkills: () => [],
-    restartCodex: async () => ({ codex_restarted: true }),
+    waitForHealth: async () => ({ ok: true, ready: true, model_count: 1 }),
     ...overrides,
   };
 }
@@ -44,13 +42,33 @@ test("installation activates only an already validated model state", async () =>
   const result = await activateInstallation(paths, active.config, {
     installService: async () => { order.push("install-service"); },
     restartService: async () => { order.push("restart-service"); },
-    waitForHealth: async () => { order.push("health"); return { ok: true, ready: true }; },
-    syncSkills: () => { order.push("skills"); return ["orchestrator"]; },
-    restartCodex: async () => { order.push("codex"); return { codex_restarted: true }; },
+    waitForHealth: async () => {
+      order.push("health");
+      return { ok: true, ready: true, model_count: 1 };
+    },
   });
 
-  assert.deepEqual(order, ["install-service", "restart-service", "health", "skills", "codex"]);
+  assert.deepEqual(order, ["install-service", "restart-service", "health"]);
   assert.equal(result.health.ready, true);
+});
+
+test("installation rejects healthy-looking service without models", async () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "9codex-activation-test-"));
+  const paths = resolvePaths(home);
+  const config = defaultConfig();
+  config.upstream.base_url = "https://router.example/v1";
+  config.upstream.api_key = "key";
+  config.upstream.default_model = "model-a";
+  const active = await reconcileModelState(paths, config, {
+    authoritativeModels: [{ id: "model-a", context_window: 1_050_000 }],
+  });
+
+  await assert.rejects(
+    () => activateInstallation(paths, active.config, activationDependencies({
+      waitForHealth: async () => ({ ok: true, ready: true, model_count: 0 }),
+    })),
+    /at least one model/i,
+  );
 });
 
 test("installation rejects invalid state before service operations", async () => {
@@ -68,7 +86,7 @@ test("installation rejects invalid state before service operations", async () =>
   assert.deepEqual(calls, []);
 });
 
-test("install rebuilds a 1.1.25 catalog from current authoritative metadata before activation", async () => {
+test("install rewrites inconsistent catalog state from current authoritative metadata", async () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "9codex-activation-test-"));
   const paths = resolvePaths(home);
   const config = defaultConfig();
@@ -109,14 +127,14 @@ test("install rebuilds a 1.1.25 catalog from current authoritative metadata befo
   assert.equal(loadConfig(paths).models.available[0].id, "model-a");
   assert.equal("config" in result, false);
   assert.equal(catalog.models[0].slug, "model-a");
-  assert.equal(catalog.models[0].effective_context_window_percent, 90);
+  assert.equal(catalog.models[0].effective_context_window_percent, 100);
   assert.deepEqual(order, [
     "models:https://router.example/v1/models",
     "install-service",
   ]);
 });
 
-test("install assigns a conservative context window when fangan omits context_window", async () => {
+test("install rejects incomplete upstream metadata before service activation", async () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "9codex-activation-test-"));
   const paths = resolvePaths(home);
   const config = defaultConfig();
@@ -124,28 +142,24 @@ test("install assigns a conservative context window when fangan omits context_wi
   config.upstream.api_key = "key";
   config.upstream.default_model = "fangan";
 
-  await reconcileAndActivateInstallation(
-    paths,
-    config,
-    activationDependencies({
-      fetchImpl: async () => ({
-        ok: true,
-        json: async () => ({ data: [{ id: "fangan" }] }),
+  let activations = 0;
+  await assert.rejects(
+    () => reconcileAndActivateInstallation(
+      paths,
+      config,
+      activationDependencies({
+        fetchImpl: async () => ({
+          ok: true,
+          json: async () => ({ data: [{ id: "fangan" }] }),
+        }),
+        installService: async () => { activations += 1; },
       }),
-    }),
+    ),
+    /context_window.*fangan|fangan.*context_window/,
   );
 
-  const persisted = loadConfig(paths);
-  const catalog = JSON.parse(fs.readFileSync(paths.catalog, "utf8"));
-  assert.equal(persisted.models.available[0].context_window, 128_000);
-  assert.equal(catalog.models[0].context_window, 128_000);
-  assert.equal(catalog.models[0].effective_context_window_percent, 90);
-  assert.equal(
-    catalog.models[0].context_window
-      * catalog.models[0].effective_context_window_percent
-      / 100,
-    115_200,
-  );
+  assert.equal(activations, 0);
+  assert.equal(fs.existsSync(paths.config), false);
 });
 
 test("install preserves every active model-state byte when upstream reconciliation fails", async () => {

@@ -1,7 +1,7 @@
 {
   "name": "@hooliy/9codex",
-  "version": "2.0.14",
-  "description": "Persistent software team and OpenAI-compatible local model gateway for Codex",
+  "version": "2.0.15",
+  "description": "Headless Fast gateway and background daemon for Codex",
   "author": "hooliy1",
   "license": "MIT",
   "repository": {
@@ -17,8 +17,8 @@
     "codex-desktop",
     "openai-compatible",
     "model-gateway",
-    "task-orchestrator",
-    "persistent-team"
+    "fast-mode",
+    "background-daemon"
   ],
   "type": "module",
   "bin": {
@@ -27,7 +27,6 @@
   "files": [
     "bin",
     "lib",
-    "skills",
     "README.md"
   ],
   "scripts": {

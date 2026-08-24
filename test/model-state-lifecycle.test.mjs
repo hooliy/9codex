@@ -66,17 +66,17 @@ test("reconcileModelState commits one validated config/catalog/modelMap state", 
   assert.equal(validateModelState(paths, result.config), true);
 });
 
-test("reconcileModelState assigns a conservative window when authoritative metadata omits it", async () => {
+test("reconcileModelState rejects metadata that cannot produce a native Codex catalog", async () => {
   const { paths, config } = fixture();
   config.upstream.default_model = "fangan";
 
-  const result = await reconcileModelState(paths, config, {
-    authoritativeModels: [{ id: "fangan" }],
-  });
-
-  assert.equal(result.config.models.available[0].context_window, 128_000);
-  assert.equal(result.built.models[0].context_window, 128_000);
-  assert.equal(result.built.models[0].effective_context_window_percent, 90);
+  await assert.rejects(
+    () => reconcileModelState(paths, config, {
+      authoritativeModels: [{ id: "fangan" }],
+    }),
+    /context_window.*fangan|fangan.*context_window/,
+  );
+  assert.equal(fs.existsSync(paths.config), false);
 });
 
 test("invalid authoritative metadata leaves all active state bytes unchanged", async () => {
@@ -100,6 +100,36 @@ test("invalid authoritative metadata leaves all active state bytes unchanged", a
     );
     assertBytesEqual(bytes(paths), before);
   }
+});
+
+test("all-disabled refresh cannot replace the last non-empty model state", async () => {
+  const { paths, config } = fixture();
+  await reconcileModelState(paths, config, { authoritativeModels: [model()] });
+  const before = bytes(paths);
+
+  await assert.rejects(
+    () => reconcileModelState(paths, config, {
+      authoritativeModels: [{ ...model("disabled"), enabled: false }],
+    }),
+    /at least one usable model|No usable model metadata/,
+  );
+
+  assertBytesEqual(bytes(paths), before);
+  assert.equal(validateModelState(paths, loadConfig(paths)), true);
+});
+
+test("invalid allow-list self-heals to a non-empty catalog and valid default model", async () => {
+  const { paths, config } = fixture();
+  config.models.enabled_ids = ["missing"];
+  config.upstream.default_model = "missing";
+
+  const result = await reconcileModelState(paths, config, {
+    authoritativeModels: [model("model-a"), model("model-b")],
+  });
+
+  assert.equal(result.config.models.enabled_ids, null);
+  assert.equal(result.config.upstream.default_model, "model-a");
+  assert.deepEqual(result.built.models.map((row) => row.slug), ["model-a", "model-b"]);
 });
 
 test("stale interrupted transaction restores all previous active bytes", async () => {

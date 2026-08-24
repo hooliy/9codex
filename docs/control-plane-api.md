@@ -159,10 +159,12 @@ by default because several OpenAI-compatible routers reject them; enable
 ```text
 event: command
 id: cmd_000001
-data: {"command_id":"cmd_000001","sequence":1,"type":"codex.restart","issued_at":"2026-08-01T08:00:00Z","expires_at":"2026-08-01T08:10:00Z","payload":{}}
+data: {"command_id":"cmd_000001","sequence":1,"type":"service.restart","issued_at":"2026-08-01T08:00:00Z","expires_at":"2026-08-01T08:10:00Z","payload":{}}
 ```
 
-Allowed types are `config.refresh`, `models.refresh`, `service.restart`, `package.update`, `codex.restart`, `diagnostics.collect`, `skills.sync`, and `skills.remove`. The API must never send shell text.
+Allowed types are `config.refresh`, `models.refresh`, `service.restart`,
+`package.update`, and `diagnostics.collect`. The API must never send shell text,
+write Codex files, or restart Codex.
 
 ## Command acknowledgement
 
@@ -175,11 +177,9 @@ Allowed types are `config.refresh`, `models.refresh`, `service.restart`, `packag
   "started_at": "2026-08-01T08:00:02Z",
   "finished_at": "2026-08-01T08:00:05Z",
   "result": {
-    "service_restarted": false,
-    "codex_restarted": true,
-    "codex_restart_required": false
+    "service_restart_requested": true
   }
 }
 ```
 
-Statuses are `received`, `running`, `succeeded`, `failed`, `rejected`, and `restart_required`.
+Statuses are `received`, `running`, `succeeded`, `failed`, and `rejected`.

@@ -6,116 +6,23 @@ import test from "node:test";
 
 import {
   defaultConfig,
-  migrateLegacyConfig,
   redactConfig,
   saveConfigAtomic,
   validateConfig,
 } from "../lib/config.mjs";
-import { reconcileModelState } from "../lib/model-state.mjs";
 import { resolvePaths } from "../lib/paths.mjs";
 
 function temporaryHome() {
   return fs.mkdtempSync(path.join(os.tmpdir(), "9codex-config-test-"));
 }
 
-test("legacy migration returns a candidate and persists only through reconciliation", async () => {
-  const home = temporaryHome();
-  const paths = resolvePaths(home);
-  fs.mkdirSync(path.dirname(paths.legacyConfig), { recursive: true });
-  fs.writeFileSync(paths.legacyConfig, JSON.stringify({
-    router9_url: "https://router.example/v1",
-    router9_key: "upstream-secret",
-    bridge_port: 12001,
-    model: "yuanpi-auto",
-    image_model: "cx/image",
-    model_refresh_interval: 480,
-    inject_config: true,
-  }));
-
-  const migrated = migrateLegacyConfig(paths, {
-    randomBytes: () => Buffer.from("0123456789abcdef", "utf8"),
-  });
-
-  assert.equal(migrated.schema_version, 1);
-  assert.equal(migrated.local.port, 12001);
-  assert.match(migrated.local.token, /^9codex_local_/);
-  assert.equal(migrated.upstream.base_url, "https://router.example/v1");
-  assert.equal(migrated.upstream.api_key, "upstream-secret");
-  assert.equal(migrated.upstream.default_model, "yuanpi-auto");
-  assert.equal(migrated.upstream.image_model, "cx/image");
-  assert.equal(migrated.models.namespace, "9codex");
-  assert.equal(migrated.models.refresh_interval_seconds, 480);
-  assert.equal(migrated.codex.inject_config, true);
-  assert.equal(migrated.codex.restart_policy, "automatic");
-  assert.equal(fs.existsSync(paths.config), false);
-  await reconcileModelState(paths, migrated, {
-    authoritativeModels: [{ id: "yuanpi-auto", context_window: 1_050_000 }],
-  });
-  assert.equal(JSON.parse(fs.readFileSync(paths.config)).upstream.api_key, "upstream-secret");
-  if (process.platform !== "win32") {
-    assert.equal(fs.statSync(paths.config).mode & 0o777, 0o600);
-  }
-});
-
 test("default configuration contains no relay address or API key", () => {
   const config = defaultConfig();
 
   assert.equal(config.upstream.base_url, null);
   assert.equal(config.upstream.api_key, null);
-  assert.equal(config.team.host, "127.0.0.1");
-  assert.equal(config.team.max_workers, 3);
-  assert.equal(config.team.model_call_stall_seconds, 900);
-  assert.equal(config.team.model_call_start_timeout_seconds, 300);
-  assert.match(config.team.token, /^9codex_team_[0-9a-f]{64}$/);
-  assert.deepEqual(config.team.harness, {
-    command: "dsh-jsonrpc-agent",
-    args: [],
-    cordis_config: null,
-    provider: "deepseek-official",
-    model: "deepseek-v4-flash",
-    max_tokens: null,
-    request_timeout_ms: 300_000,
-  });
-});
-
-test("team worker concurrency supports up to 20 workers", () => {
-  const config = defaultConfig();
-  config.team.max_workers = 20;
-  assert.equal(validateConfig(config).team.max_workers, 20);
-  config.team.max_workers = 21;
-  assert.throws(() => validateConfig(config), /integer from 1 to 20/);
-});
-
-test("model call stall detection is positive and does not cap Worker duration", () => {
-  const config = defaultConfig();
-  config.team.model_call_stall_seconds = 3600;
-  assert.equal(validateConfig(config).team.model_call_stall_seconds, 3600);
-  config.team.model_call_stall_seconds = 0;
-  assert.throws(() => validateConfig(config), /model_call_stall_seconds/);
-  const start = defaultConfig();
-  start.team.model_call_start_timeout_seconds = 0;
-  assert.throws(() => validateConfig(start), /model_call_start_timeout_seconds/);
-});
-
-test("legacy team config receives Harness defaults and Harness config is strict", () => {
-  const config = defaultConfig();
-  delete config.team.harness;
-  assert.equal(validateConfig(config).team.harness.command, "dsh-jsonrpc-agent");
-
-  const invalid = [
-    ["command", "", /team\.harness\.command/],
-    ["args", ["ok", 1], /team\.harness\.args/],
-    ["cordis_config", "", /team\.harness\.cordis_config/],
-    ["provider", "", /team\.harness\.provider/],
-    ["model", "", /team\.harness\.model/],
-    ["max_tokens", 0, /team\.harness\.max_tokens/],
-    ["request_timeout_ms", 0, /team\.harness\.request_timeout_ms/],
-  ];
-  for (const [key, value, pattern] of invalid) {
-    const candidate = defaultConfig();
-    candidate.team.harness[key] = value;
-    assert.throws(() => validateConfig(candidate), pattern);
-  }
+  assert.equal("team" in config, false);
+  assert.equal("codex" in config, false);
 });
 
 test("redacts every credential from diagnostics", () => {
@@ -126,8 +33,8 @@ test("redacts every credential from diagnostics", () => {
     },
     local: { token: "local-secret" },
     upstream: { api_key: "upstream-secret" },
-    runtime: {
-      env: { NINECODEX_HARNESS_API_KEY: "harness-secret" },
+    nested: {
+      env: { PRIVATE_API_KEY: "nested-secret" },
     },
   });
   const text = JSON.stringify(redacted);
@@ -137,13 +44,13 @@ test("redacts every credential from diagnostics", () => {
     "refresh-secret",
     "local-secret",
     "upstream-secret",
-    "harness-secret",
+    "nested-secret",
   ]) {
     assert.equal(text.includes(secret), false);
   }
   assert.equal(redacted.local.token, "[REDACTED]");
   assert.equal(redacted.upstream.api_key, "[REDACTED]");
-  assert.equal(redacted.runtime.env.NINECODEX_HARNESS_API_KEY, "[REDACTED]");
+  assert.equal(redacted.nested.env.PRIVATE_API_KEY, "[REDACTED]");
 });
 
 test("rejects invalid pending config without replacing active or last-good config", () => {
@@ -162,7 +69,6 @@ test("rejects invalid pending config without replacing active or last-good confi
     },
     models: { namespace: "9codex", refresh_interval_seconds: 300 },
     updates: { enabled: true, channel: "stable", auto_install: true },
-    codex: { inject_config: true, restart_policy: "automatic", restart_required: false }
   };
   saveConfigAtomic(paths, valid);
   saveConfigAtomic(paths, { ...valid, upstream: { ...valid.upstream, default_model: "model-b" } });

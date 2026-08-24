@@ -30,51 +30,24 @@ function remoteCommand(type, sequence = 1, payload = {}) {
 test("parses command events from fragmented SSE input", () => {
   const chunks = [
     "event: command\nid: cmd_1\ndata: {\"command_id\":\"cmd_1\",\"sequence\":1,",
-    "\"type\":\"codex.restart\",\"issued_at\":\"2026-08-01T08:00:00Z\",",
+    "\"type\":\"service.restart\",\"issued_at\":\"2026-08-01T08:00:00Z\",",
     "\"expires_at\":\"2026-08-01T08:10:00Z\",\"payload\":{}}\n\n",
   ];
 
-  assert.deepEqual(parseSseCommands(chunks), [remoteCommand("codex.restart")]);
+  assert.deepEqual(parseSseCommands(chunks), [remoteCommand("service.restart")]);
 });
 
-test("acknowledges lifecycle and automatically restarts Codex", async () => {
-  const home = fs.mkdtempSync(path.join(os.tmpdir(), "9codex-daemon-test-"));
-  const paths = resolvePaths(home);
-  const statuses = [];
-  let codexRestarted = 0;
-  const config = {
-    installation: { installation_id: "ins_test" },
-    codex: { restart_policy: "automatic" },
-  };
-
-  const result = await dispatchRemoteCommand(remoteCommand("codex.restart"), {
-    paths,
-    config,
-    now: () => now,
-    ack: async (payload) => { statuses.push(payload.status); },
-    restartCodex: async () => { codexRestarted += 1; return { codex_restarted: true }; },
-  });
-
-  assert.deepEqual(statuses, ["received", "running", "succeeded"]);
-  assert.equal(codexRestarted, 1);
-  assert.equal(result.codex_restarted, true);
-});
-
-test("refreshes transactional configuration, acknowledges, then restarts local service", async () => {
+test("refreshes transactional configuration without writing or restarting Codex", async () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "9codex-daemon-test-"));
   const paths = resolvePaths(home);
   const order = [];
-  const config = {
-    installation: { installation_id: "ins_test" },
-    codex: { restart_policy: "automatic" },
-  };
+  const config = { installation: { installation_id: "ins_test" } };
   await dispatchRemoteCommand(remoteCommand("config.refresh"), {
     paths,
     config,
     now: () => now,
     ack: async (payload) => { order.push(`ack:${payload.status}`); },
     syncConfig: async () => { order.push("sync"); return { changed: true, config: { ...config, models: {} } }; },
-    injectCodex: async () => { order.push("inject"); },
     restartService: async () => { order.push("restart-service"); },
   });
 
@@ -82,7 +55,6 @@ test("refreshes transactional configuration, acknowledges, then restarts local s
     "ack:received",
     "ack:running",
     "sync",
-    "inject",
     "ack:succeeded",
     "restart-service",
   ]);
@@ -167,7 +139,7 @@ test("takes over the gateway port when a stale daemon still owns it", async () =
   assert.equal(fs.existsSync(paths.daemonPid), false);
 });
 
-test("daemon starts the gateway before the persistent team runtime", async () => {
+test("daemon runs only the background gateway", async () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "9codex-daemon-test-"));
   const paths = resolvePaths(home);
   const config = defaultConfig();
@@ -175,10 +147,6 @@ test("daemon starts the gateway before the persistent team runtime", async () =>
   config.upstream.api_key = "key";
   saveConfigAtomic(paths, config);
   const order = [];
-  const team = {
-    observeTeamEvent() {},
-    async close() { order.push("team-close"); },
-  };
   const server = {
     once() {},
     listen(port, host, callback) { order.push("gateway"); callback(); },
@@ -188,41 +156,11 @@ test("daemon starts the gateway before the persistent team runtime", async () =>
   const running = runDaemon(paths, {
     signal: controller.signal,
     validateModelState: () => true,
-    startTeamRuntime: async () => { order.push("team"); return team; },
     createGateway: () => server,
     startAutomaticUpdates: () => ({ close() {} }),
   });
   await new Promise((resolve) => setImmediate(resolve));
   controller.abort();
   await running;
-  assert.deepEqual(order, ["gateway", "team", "gateway-close", "team-close"]);
-});
-
-test("gateway remains available when the persistent team runtime fails to start", async () => {
-  const home = fs.mkdtempSync(path.join(os.tmpdir(), "9codex-daemon-test-"));
-  const paths = resolvePaths(home);
-  const config = defaultConfig();
-  config.upstream.base_url = "https://router.example/v1";
-  config.upstream.api_key = "key";
-  saveConfigAtomic(paths, config);
-  const order = [];
-  const server = {
-    once() {},
-    listen(_port, _host, callback) { order.push("gateway"); callback(); },
-    close(callback) { order.push("gateway-close"); callback(); },
-  };
-  const controller = new AbortController();
-  const running = runDaemon(paths, {
-    signal: controller.signal,
-    validateModelState: () => true,
-    startTeamRuntime: async () => { order.push("team"); throw new Error("team failed"); },
-    createGateway: () => server,
-    startAutomaticUpdates: () => ({ close() {} }),
-    onError: (error) => order.push(error.message),
-  });
-  await new Promise((resolve) => setImmediate(resolve));
-  assert.equal(fs.existsSync(paths.daemonPid), true);
-  controller.abort();
-  await running;
-  assert.deepEqual(order, ["gateway", "team", "team failed", "gateway-close"]);
+  assert.deepEqual(order, ["gateway", "gateway-close"]);
 });

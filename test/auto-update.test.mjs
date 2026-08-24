@@ -7,11 +7,12 @@ import test from "node:test";
 import {
   AUTO_UPDATE_CHECK_MS,
   AUTO_UPDATE_RETRY_MS,
+  getGatewayActivity,
   launchPendingUpdate,
   ownsUpdateLock,
   runAutomaticUpdateCycle,
   startAutomaticUpdates,
-  waitForCodexIdle,
+  waitForGatewayIdle,
 } from "../lib/auto-update.mjs";
 import { resolvePaths } from "../lib/paths.mjs";
 
@@ -31,7 +32,7 @@ const config = {
   },
 };
 
-test("queues a newer npm version but never launches it while Codex is busy", async () => {
+test("queues a newer npm version but never launches it while gateway requests are active", async () => {
   const paths = fixture();
   let launches = 0;
   const result = await runAutomaticUpdateCycle(paths, {
@@ -48,7 +49,7 @@ test("queues a newer npm version but never launches it while Codex is busy", asy
   assert.equal(JSON.parse(fs.readFileSync(paths.pendingUpdate)).version, "1.1.13");
 });
 
-test("launches one hidden detached worker after every Codex task is idle", async () => {
+test("launches one hidden detached worker after the gateway becomes idle", async () => {
   const paths = fixture();
   fs.writeFileSync(paths.pendingUpdate, JSON.stringify({
     version: "1.1.13",
@@ -69,7 +70,7 @@ test("launches one hidden detached worker after every Codex task is idle", async
   assert.deepEqual(calls, ["1.1.13"]);
 });
 
-test("unknown Codex state keeps the update queued", async () => {
+test("unknown gateway state keeps the update queued", async () => {
   const paths = fixture();
   fs.writeFileSync(paths.pendingUpdate, JSON.stringify({
     version: "1.1.13",
@@ -147,11 +148,23 @@ test("a dead update worker lock is recovered automatically", () => {
   assert.equal(JSON.parse(fs.readFileSync(paths.updateLock)).pid, 456);
 });
 
-test("update worker waits through busy and unknown states until Codex is idle", async () => {
+test("reads active request count from the daemon health endpoint", async () => {
+  const activity = await getGatewayActivity(fixture(), {
+    loadConfig: () => ({ local: { host: "127.0.0.1", port: 10101 } }),
+    fetchImpl: async () => ({
+      ok: true,
+      json: async () => ({ ready: true, active_requests: 2 }),
+    }),
+  });
+
+  assert.deepEqual(activity, { state: "busy", active_requests: 2 });
+});
+
+test("update worker waits through busy and unknown states until the gateway is idle", async () => {
   const states = ["busy", "unknown", "idle"];
   let waits = 0;
 
-  const activity = await waitForCodexIdle(fixture(), {
+  const activity = await waitForGatewayIdle(fixture(), {
     getActivity: async () => ({ state: states.shift() }),
     wait: async (milliseconds) => {
       assert.equal(milliseconds, AUTO_UPDATE_RETRY_MS);

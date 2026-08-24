@@ -67,7 +67,7 @@ test("reads context and output limits from upstream capability metadata", async 
   assert.equal(rows[0].max_output_tokens, 128_000);
 });
 
-test("uses a conservative 128k context window when upstream omits context_window", async () => {
+test("does not invent a context window when upstream omits it", async () => {
   const rows = await refreshUpstreamModels({
     upstream: {
       base_url: "https://router.example/v1",
@@ -81,7 +81,7 @@ test("uses a conservative 128k context window when upstream omits context_window
     }),
   });
 
-  assert.equal(rows[0].context_window, 128_000);
+  assert.equal(Object.hasOwn(rows[0], "context_window"), false);
 });
 
 test("rejects explicitly invalid context limits with the model id", async () => {

@@ -51,12 +51,77 @@ test("health readiness tracks config/catalog/modelMap consistency", async (t) =>
   const gatewayUrl = await listen(gateway);
   t.after(() => new Promise((resolve) => gateway.close(resolve)));
 
-  assert.equal((await (await fetch(`${gatewayUrl}/healthz`)).json()).ready, true);
+  const healthy = await (await fetch(`${gatewayUrl}/healthz`)).json();
+  assert.equal(healthy.ready, true);
+  assert.equal(healthy.active_requests, 0);
+  assert.equal(healthy.model_count, 1);
   fs.writeFileSync(paths.modelMap, JSON.stringify({ namespace: "9codex" }));
   const unhealthy = await (await fetch(`${gatewayUrl}/healthz`)).json();
   assert.equal(unhealthy.ok, true);
   assert.equal(unhealthy.ready, false);
+  assert.equal(unhealthy.model_count, 0);
   assert.match(unhealthy.error, /model map.*inconsistent/i);
+});
+
+test("gateway model endpoints always expose at least one validated model", async (t) => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "9codex-gateway-test-"));
+  const paths = resolvePaths(home);
+  const config = gatewayConfig("https://router.example");
+  await routingFixture(paths, config);
+  const gateway = createGateway(config, paths);
+  const gatewayUrl = await listen(gateway);
+  t.after(() => new Promise((resolve) => gateway.close(resolve)));
+  const headers = { authorization: "Bearer 9codex_local_test" };
+
+  const apiList = await (await fetch(`${gatewayUrl}/v1/models`, { headers })).json();
+  const desktopList = await (
+    await fetch(`${gatewayUrl}/v1/models?client_version=test`, { headers })
+  ).json();
+
+  assert.equal(apiList.data.length, 1);
+  assert.equal(apiList.data[0].id, "raw/model");
+  assert.equal(desktopList.models.length, 1);
+  assert.equal(desktopList.models[0].slug, "raw/model");
+});
+
+test("health counts authenticated model requests until response completion", async (t) => {
+  let releaseUpstream;
+  const upstreamReleased = new Promise((resolve) => {
+    releaseUpstream = resolve;
+  });
+  const upstream = http.createServer(async (req, res) => {
+    for await (const _chunk of req) {}
+    await upstreamReleased;
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify({ id: "resp_test", object: "response", output: [] }));
+  });
+  const upstreamUrl = await listen(upstream);
+  t.after(() => {
+    releaseUpstream();
+    return new Promise((resolve) => upstream.close(resolve));
+  });
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "9codex-gateway-test-"));
+  const paths = resolvePaths(home);
+  const config = gatewayConfig(upstreamUrl);
+  await routingFixture(paths, config);
+  const gateway = createGateway(config, paths);
+  const gatewayUrl = await listen(gateway);
+  t.after(() => new Promise((resolve) => gateway.close(resolve)));
+
+  const request = fetch(`${gatewayUrl}/v1/responses`, {
+    method: "POST",
+    headers: {
+      authorization: "Bearer 9codex_local_test",
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({ model: "raw/model", input: "hello", stream: false }),
+  });
+
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal((await (await fetch(`${gatewayUrl}/healthz`)).json()).active_requests, 1);
+  releaseUpstream();
+  assert.equal((await request).status, 200);
+  assert.equal((await (await fetch(`${gatewayUrl}/healthz`)).json()).active_requests, 0);
 });
 
 test("gateway returns retryable 503 while model-state transaction lock is active", async (t) => {
@@ -312,7 +377,7 @@ test("gateway forwards Responses request bodies larger than 64 MiB", async (t) =
   assert.ok(capturedLength > 64 * 1024 * 1024);
 });
 
-test("native Responses routing preserves priority service tier for GPT models", async (t) => {
+test("native Responses routing forces priority for GPT without changing reasoning output controls", async (t) => {
   let capturedBody;
   const upstream = http.createServer(async (req, res) => {
     const chunks = [];
@@ -340,7 +405,9 @@ test("native Responses routing preserves priority service tier for GPT models", 
     },
     body: JSON.stringify({
       model: "OpenAI/GPT-5.6-SOL",
-      service_tier: "priority",
+      service_tier: "default",
+      reasoning: { effort: "high", summary: "detailed" },
+      text: { verbosity: "high" },
       input: "hello",
       stream: false,
     }),
@@ -349,9 +416,11 @@ test("native Responses routing preserves priority service tier for GPT models", 
   assert.equal(response.status, 200);
   assert.equal(capturedBody.model, "OpenAI/GPT-5.6-SOL");
   assert.equal(capturedBody.service_tier, "priority");
+  assert.deepEqual(capturedBody.reasoning, { effort: "high", summary: "detailed" });
+  assert.deepEqual(capturedBody.text, { verbosity: "high" });
 });
 
-test("selectable Fast model forces priority service tier for GPT requests", async (t) => {
+test("original GPT catalog model forces priority without a Fast alias", async (t) => {
   let capturedBody;
   const upstream = http.createServer(async (req, res) => {
     const chunks = [];
@@ -374,8 +443,7 @@ test("selectable Fast model forces priority service tier for GPT requests", asyn
       capabilities: { streaming: true, tools: true },
     }],
   });
-  const fastModel = active.built.models.find((model) => model.display_name.endsWith("· 快速模式"));
-  assert.ok(fastModel);
+  assert.deepEqual(active.built.models.map((model) => model.slug), ["cx/gpt-5.6-sol"]);
   const gateway = createGateway(active.config, paths);
   const gatewayUrl = await listen(gateway);
   t.after(() => new Promise((resolve) => gateway.close(resolve)));
@@ -387,7 +455,7 @@ test("selectable Fast model forces priority service tier for GPT requests", asyn
       "content-type": "application/json",
     },
     body: JSON.stringify({
-      model: fastModel.slug,
+      model: "cx/gpt-5.6-sol",
       input: "hello",
       stream: false,
     }),
@@ -396,6 +464,51 @@ test("selectable Fast model forces priority service tier for GPT requests", asyn
   assert.equal(response.status, 200);
   assert.equal(capturedBody.model, "cx/gpt-5.6-sol");
   assert.equal(capturedBody.service_tier, "priority");
+});
+
+test("native Responses streams the first upstream bytes before completion", async (t) => {
+  let releaseUpstream;
+  const upstreamReleased = new Promise((resolve) => {
+    releaseUpstream = resolve;
+  });
+  const upstream = http.createServer(async (req, res) => {
+    for await (const _chunk of req) {}
+    res.writeHead(200, { "content-type": "text/event-stream" });
+    res.write("event: response.output_text.delta\ndata: first\n\n");
+    await upstreamReleased;
+    res.end("event: response.completed\ndata: done\n\n");
+  });
+  const upstreamUrl = await listen(upstream);
+  t.after(() => {
+    releaseUpstream();
+    return new Promise((resolve) => upstream.close(resolve));
+  });
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "9codex-gateway-test-"));
+  const paths = resolvePaths(home);
+  const config = gatewayConfig(upstreamUrl);
+  config.upstream.default_model = "gpt-5.6-sol";
+  await routingFixture(paths, config);
+  const gateway = createGateway(config, paths);
+  const gatewayUrl = await listen(gateway);
+  t.after(() => new Promise((resolve) => gateway.close(resolve)));
+
+  const response = await fetch(`${gatewayUrl}/v1/responses`, {
+    method: "POST",
+    headers: {
+      authorization: "Bearer 9codex_local_test",
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({ model: "gpt-5.6-sol", input: "hello", stream: true }),
+  });
+  const reader = response.body.getReader();
+  const first = await reader.read();
+
+  assert.equal(first.done, false);
+  assert.match(Buffer.from(first.value).toString("utf8"), /first/);
+  releaseUpstream();
+  const second = await reader.read();
+  assert.equal(second.done, false);
+  assert.match(Buffer.from(second.value).toString("utf8"), /response\.completed/);
 });
 
 test("native Responses routing coalesces split text content before forwarding", async (t) => {
@@ -572,8 +685,39 @@ test("proxies image generation through the configured upstream image model", asy
   assert.equal(captured.authorization, "Bearer upstream-secret");
   assert.equal(captured.accept, "application/json");
   assert.equal(captured.body.model, "cx/gpt-5.5-image");
+  assert.equal(captured.body.service_tier, "priority");
   assert.equal(captured.body.prompt, "a red panda");
   assert.equal(captured.body.size, "1024x1024");
+});
+
+test("image generation removes service tier for non-GPT models", async (t) => {
+  let capturedBody;
+  const upstream = http.createServer(async (req, res) => {
+    const chunks = [];
+    for await (const chunk of req) chunks.push(chunk);
+    capturedBody = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify({ data: [] }));
+  });
+  const upstreamUrl = await listen(upstream);
+  t.after(() => new Promise((resolve) => upstream.close(resolve)));
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "9codex-gateway-test-"));
+  const paths = resolvePaths(home);
+  const config = gatewayConfig(upstreamUrl);
+  config.upstream.image_model = "vendor/image-model";
+  await routingFixture(paths, config);
+  const gateway = createGateway(config, paths);
+  const gatewayUrl = await listen(gateway);
+  t.after(() => new Promise((resolve) => gateway.close(resolve)));
+
+  const response = await fetch(`${gatewayUrl}/v1/images/generations`, {
+    method: "POST",
+    headers: { authorization: "Bearer 9codex_local_test", "content-type": "application/json" },
+    body: JSON.stringify({ prompt: "hello", service_tier: "priority" }),
+  });
+
+  assert.equal(response.status, 200);
+  assert.equal("service_tier" in capturedBody, false);
 });
 
 test("routes Chat-compatible models through chat/completions and emits Responses SSE", async (t) => {
@@ -604,7 +748,7 @@ test("routes Chat-compatible models through chat/completions and emits Responses
     headers: { authorization: "Bearer 9codex_local_test", "content-type": "application/json" },
     body: JSON.stringify({
       model: "OpenAI/GPT-5.6-SOL",
-      service_tier: "priority",
+      service_tier: "default",
       input: "hello",
       stream: true,
     }),

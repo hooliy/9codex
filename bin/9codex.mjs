@@ -13,16 +13,12 @@ import {
   ownsUpdateLock,
   readPendingUpdate,
   releaseUpdateLock,
-  waitForCodexIdle,
+  waitForGatewayIdle,
 } from "../lib/auto-update.mjs";
-import {
-  injectCodexConfig,
-  restoreCodexConfig,
-} from "../lib/codex-config.mjs";
+import { launchCodexDesktop } from "../lib/codex-launch.mjs";
 import {
   defaultConfig,
   loadConfig,
-  migrateLegacyConfig,
   redactConfig,
 } from "../lib/config.mjs";
 import { runDaemon } from "../lib/daemon.mjs";
@@ -31,12 +27,10 @@ import {
   enableAllModels,
   selectEnabledModels,
 } from "../lib/models.mjs";
-import { reconcileModelState, validateModelState } from "../lib/model-state.mjs";
+import { reconcileModelState } from "../lib/model-state.mjs";
 import { runMcpServer } from "../lib/mcp.mjs";
-import { restartCodex } from "../lib/platform.mjs";
 import { resolvePaths } from "../lib/paths.mjs";
 import { installService, restartService, uninstallService } from "../lib/service.mjs";
-import { syncBundledSkills } from "../lib/skills.mjs";
 import { resolveLatestVersion, runStagedUpdate } from "../lib/updater.mjs";
 import {
   askApiKey,
@@ -54,7 +48,6 @@ const cliPath = fileURLToPath(import.meta.url);
 
 function loadCandidateConfig() {
   if (fs.existsSync(paths.config)) return loadConfig(paths);
-  if (fs.existsSync(paths.legacyConfig)) return migrateLegacyConfig(paths, { deviceName: os.hostname() });
   return defaultConfig({ deviceName: os.hostname() });
 }
 
@@ -117,7 +110,6 @@ async function syncModels(config) {
   } finally {
     rl?.close();
   }
-  injectCodexConfig(paths, config, { nodePath: process.execPath, cliPath });
   const selected = Array.isArray(config.models.enabled_ids)
     ? new Set(config.models.enabled_ids)
     : null;
@@ -148,6 +140,8 @@ async function waitForHealth(config, timeoutMs = 20_000, expectedVersion = null)
       result?.ok
       && result?.ready
       && result?.service === "9codex"
+      && Number.isInteger(result.model_count)
+      && result.model_count > 0
       && (!expectedVersion || result.version === expectedVersion)
     ) return result;
     await new Promise((resolve) => setTimeout(resolve, 250));
@@ -172,25 +166,11 @@ function runInstalledCli(installation, command, args = []) {
   });
 }
 
-async function configureCodex(config) {
-  injectCodexConfig(paths, config, { nodePath: process.execPath, cliPath });
-}
-
-async function restartCodexWithRepair(config) {
-  return restartCodex({
-    sessionFile: paths.desktopSession,
-    beforeOpen: () => configureCodex(config),
-  });
-}
-
 function activationDependencies() {
   return {
     installService: () => installService(paths, { cliPath, nodePath: process.execPath }),
     restartService: () => restartService(paths),
     waitForHealth: (config) => waitForHealth(config, 20_000, packageInfo.version),
-    syncSkills: () => syncBundledSkills(paths, { packageRoot }),
-    restartCodex: (config) => restartCodexWithRepair(config),
-    configureCodex: (config) => configureCodex(config),
   };
 }
 
@@ -229,11 +209,6 @@ try {
       console.log(JSON.stringify({ installed: true, ...result }, null, 2));
       break;
     }
-    case "skills-sync":
-      console.log(JSON.stringify({
-        skills: syncBundledSkills(paths, { packageRoot }),
-      }, null, 2));
-      break;
     case "sync": {
       console.log(JSON.stringify(await syncModels(loadCandidateConfig()), null, 2));
       break;
@@ -246,38 +221,37 @@ try {
         configured: true,
         authorized: Boolean(config.control_plane.authorization_id),
         health: result,
-        taskboard: config.team?.enabled === false ? null : {
-          enabled: true,
-          host: config.team.host,
-          port: config.team.port,
-        },
         config: redactConfig(config),
       }, null, 2));
       process.exitCode = result?.ok ? 0 : 1;
       break;
     }
-    case "taskboard": {
+    case "app": {
       const config = loadConfig(paths);
-      console.log(`http://${config.team.host}:${config.team.port}/#token=${encodeURIComponent(config.team.token)}`);
-      break;
-    }
-    case "tasks": {
-      const [action = "list", taskGroupId, runtimeKind] = args;
-      const { openTeamStore } = await import("../lib/team-store.mjs");
-      const store = await openTeamStore(paths.teamDatabase);
-      try {
-        if (action === "list") console.log(JSON.stringify(store.listTaskGroups(), null, 2));
-        else if (action === "show" && taskGroupId) console.log(JSON.stringify(store.getTaskGroupSnapshot(taskGroupId, { includeWorkers: true }), null, 2));
-        else if (action === "runtime" && taskGroupId && runtimeKind) {
-          console.log(JSON.stringify(store.changeTaskGroupRuntime(taskGroupId, {
-            runtimeKind,
-            actor: "user",
-            source: "cli",
-          }), null, 2));
-        } else throw new Error("Commands: tasks list, tasks show <task-group-id>, tasks runtime <task-group-id> <codex|deepseek-harness>");
-      } finally {
-        store.close();
+      const current = await health(config);
+      if (
+        !current?.ok
+        || !current.ready
+        || !Number.isInteger(current.model_count)
+        || current.model_count < 1
+      ) {
+        throw new Error("9codex service is not ready with at least one model");
       }
+      const child = launchCodexDesktop({
+        config,
+        paths,
+        workspace: args[0] ? path.resolve(args[0]) : process.cwd(),
+        ...(process.env.CODEX_CLI_PATH ? { command: process.env.CODEX_CLI_PATH } : {}),
+        nodePath: process.execPath,
+        cliPath,
+      });
+      await new Promise((resolve, reject) => {
+        child.once("error", reject);
+        child.once("close", (status) => {
+          if (status === 0) resolve();
+          else reject(new Error(`codex app exited with ${status}`));
+        });
+      });
       break;
     }
     case "restart":
@@ -285,32 +259,6 @@ try {
       if (!(await waitForHealth(loadConfig(paths)))) throw new Error("9codex service restart failed");
       console.log("9codex service restarted.");
       break;
-    case "codex-restart": {
-      const cfg = loadConfig(paths);
-      try {
-        validateModelState(paths, cfg);
-      } catch {
-        const result = await install(cfg);
-        console.log(JSON.stringify({
-          ...result.codex,
-          model_state_self_healed: true,
-          service_self_healed: true,
-        }, null, 2));
-        break;
-      }
-      const current = await health(cfg);
-      if (!current?.ok || current.version !== packageInfo.version) {
-        const result = await activate(cfg);
-        console.log(JSON.stringify({ ...result.codex, service_self_healed: true }, null, 2));
-        break;
-      }
-      console.log(JSON.stringify(
-        await restartCodexWithRepair(cfg),
-        null,
-        2,
-      ));
-      break;
-    }
     case "auth-token":
       process.stdout.write(`${loadConfig(paths).local.token}\n`);
       break;
@@ -328,9 +276,6 @@ try {
             : undefined,
       });
       const config = reconciled.config;
-      if (action !== "list") {
-        injectCodexConfig(paths, config, { nodePath: process.execPath, cliPath });
-      }
       const selected = Array.isArray(config.models.enabled_ids)
         ? new Set(config.models.enabled_ids)
         : null;
@@ -375,7 +320,7 @@ try {
         ) {
           throw new Error("Pending automatic update no longer matches local policy");
         }
-        await waitForCodexIdle(paths);
+        await waitForGatewayIdle(paths);
         const result = await runStagedUpdate({
           package: "@hooliy/9codex",
           version: target,
@@ -385,7 +330,7 @@ try {
           currentVersion: packageInfo.version,
           packageRoot,
           policy: config.updates,
-          beforeActivate: () => waitForCodexIdle(paths),
+          beforeActivate: () => waitForGatewayIdle(paths),
           activate: (installation) => runInstalledCli(installation, "install"),
           health: async (version) => Boolean(await waitForHealth(loadConfig(paths), 20_000, version)),
         });
@@ -401,15 +346,13 @@ try {
       break;
     case "uninstall":
       await uninstallService(paths);
-      restoreCodexConfig(paths);
-      console.log("9codex service removed and the prior Codex configuration restored. Local 9codex configuration was retained.");
+      console.log("9codex service removed. Codex files were never modified. Local 9codex configuration was retained.");
       break;
     case "daemon":
       await runDaemon(paths, {
         version: packageInfo.version,
         nodePath: process.execPath,
         cliPath,
-        restartCodex: () => restartCodexWithRepair(loadConfig(paths)),
         onError: (error) => console.error(`9codex daemon: ${error.message}`),
         updatePackage: async (request) => {
           const active = loadConfig(paths);
@@ -430,7 +373,7 @@ try {
       });
       break;
     default:
-      throw new Error("Commands: init, sync, skills-sync, install, status, taskboard, tasks, models, restart, codex-restart, auth-token, update, version, uninstall");
+      throw new Error("Commands: init, sync, install, app, status, models, restart, auth-token, update, version, uninstall");
   }
 } catch (error) {
   console.error(`9codex error: ${error.message}`);

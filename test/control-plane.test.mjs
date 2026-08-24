@@ -52,7 +52,6 @@ function baseConfig(baseUrl) {
       available: [{ id: "old-model", context_window: 128_000 }],
     },
     updates: { enabled: true, channel: "stable", auto_install: true },
-    codex: { inject_config: true, restart_policy: "automatic", restart_required: false },
   };
 }
 
@@ -216,7 +215,7 @@ test("does not replace the active config when bootstrap is malformed", async (t)
   assert.equal(fs.readFileSync(paths.config, "utf8"), before);
 });
 
-test("uses a conservative missing bootstrap context and rejects explicit invalid values atomically", async (t) => {
+test("rejects incomplete or invalid bootstrap context atomically", async (t) => {
   let models = [];
   const fixture = await fixtureServer((req, res) => {
     res.setHeader("content-type", "application/json");
@@ -245,17 +244,18 @@ test("uses a conservative missing bootstrap context and rejects explicit invalid
   assert.deepEqual(modelStateBytes(paths), before, "empty");
 
   models = [{ id: "new-model" }];
-  const synced = await syncBootstrap(paths, config);
-  assert.equal(synced.config.models.available[0].context_window, 128_000);
-  assert.equal(synced.config.models.source_base_url, "https://new.example/v1");
-  const valid = modelStateBytes(paths);
+  await assert.rejects(
+    () => syncBootstrap(paths, config),
+    /context_window.*new-model|new-model.*context_window/,
+  );
+  assert.deepEqual(modelStateBytes(paths), before, "missing context");
 
   models = [{ id: "new-model", context_window: 0 }];
   await assert.rejects(
-    () => syncBootstrap(paths, synced.config),
+    () => syncBootstrap(paths, config),
     /context_window.*new-model|new-model.*context_window/,
   );
-  assert.deepEqual(modelStateBytes(paths), valid, "invalid context");
+  assert.deepEqual(modelStateBytes(paths), before, "invalid context");
 });
 
 test("surfaces explicit server revocation without deleting local configuration", async (t) => {

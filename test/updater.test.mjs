@@ -195,7 +195,7 @@ test("successful update activates the newly installed CLI before checking health
   assert.deepEqual(result, { updated: true, version: "3.0.1", rolled_back: false });
 });
 
-test("automatic update activation reconciles a legacy catalog before service activation", async () => {
+test("automatic update activation rewrites inconsistent catalog state before service activation", async () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "9codex-updater-test-"));
   const paths = resolvePaths(home);
   const config = defaultConfig();
@@ -238,10 +238,8 @@ test("automatic update activation reconciles a legacy catalog before service act
       restartService: async () => { calls.push("restart-service"); },
       waitForHealth: async () => {
         calls.push("activation-health");
-        return { ok: true, ready: true };
+        return { ok: true, ready: true, model_count: 1 };
       },
-      syncSkills: () => [],
-      restartCodex: async () => ({ codex_restarted: true }),
     }),
     health: async () => {
       calls.push("update-health");
@@ -251,7 +249,7 @@ test("automatic update activation reconciles a legacy catalog before service act
 
   const catalog = JSON.parse(fs.readFileSync(paths.catalog, "utf8"));
   assert.equal(catalog.models[0].slug, "model-a");
-  assert.equal(catalog.models[0].effective_context_window_percent, 90);
+  assert.equal(catalog.models[0].effective_context_window_percent, 100);
   assert.deepEqual(calls, [
     "download:@hooliy/9codex@3.0.1",
     "models:https://router.example/v1/models",

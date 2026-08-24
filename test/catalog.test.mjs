@@ -52,6 +52,10 @@ test("catalog advertises only verified capabilities and enabled models", () => {
   assert.deepEqual(result.models[0].service_tiers, []);
   assert.equal("additional_speed_tiers" in result.models[0], false);
   assert.equal(result.models[0].default_service_tier, null);
+  assert.match(result.models[0].base_instructions, /simple tasks directly/i);
+  assert.match(result.models[0].base_instructions, /Codex native sub-agents in parallel/i);
+  assert.match(result.models[0].base_instructions, /Never use an external orchestrator/i);
+  assert.match(result.models[0].base_instructions, /Do not restrict Codex native capabilities/i);
   assert.deepEqual(
     result.models[0].supported_reasoning_levels.map((row) => row.effort),
     ["low", "medium"],
@@ -65,16 +69,17 @@ test("catalog rows include the shell type required by Codex Desktop", () => {
   assert.equal(result.models[0].shell_type, "shell_command");
 });
 
-test("catalog rows include the truncation policy required by Codex Desktop", () => {
+test("catalog uses the full upstream window for Codex-required truncation metadata", () => {
   const result = buildCatalog(config());
 
   assert.deepEqual(result.models[0].truncation_policy, {
     mode: "tokens",
-    limit: 10000,
+    limit: 64_000,
   });
+  assert.equal(result.models[0].effective_context_window_percent, 100);
 });
 
-test("catalog preserves a 1.05M context window with a fixed 90 percent effective limit", () => {
+test("catalog preserves the full upstream 1.05M context window", () => {
   const value = config();
   value.models.available[0].context_window = 1_050_000;
 
@@ -82,19 +87,20 @@ test("catalog preserves a 1.05M context window with a fixed 90 percent effective
 
   assert.equal(model.context_window, 1_050_000);
   assert.equal(model.max_context_window, 1_050_000);
-  assert.equal(model.effective_context_window_percent, 90);
-  assert.equal(model.context_window * model.effective_context_window_percent / 100, 945_000);
+  assert.equal(model.effective_context_window_percent, 100);
+  assert.deepEqual(model.truncation_policy, { mode: "tokens", limit: 1_050_000 });
+  assert.equal(model.context_window * model.effective_context_window_percent / 100, 1_050_000);
 });
 
-test("catalog compresses a 372k model at 334.8k", () => {
+test("catalog preserves the full upstream 372k context window", () => {
   const value = config();
   value.models.available[0].context_window = 372_000;
 
   const model = buildCatalog(value).models[0];
 
   assert.equal(model.context_window, 372_000);
-  assert.equal(model.effective_context_window_percent, 90);
-  assert.equal(model.context_window * model.effective_context_window_percent / 100, 334_800);
+  assert.equal(model.effective_context_window_percent, 100);
+  assert.equal(model.context_window * model.effective_context_window_percent / 100, 372_000);
 });
 
 test("catalog rejects missing or invalid context windows", () => {
@@ -123,7 +129,7 @@ test("catalog rows include the experimental tool list required by Codex Desktop"
   assert.deepEqual(result.models[0].experimental_supported_tools, []);
 });
 
-test("catalog advertises Fast for GPT models without upstream service tier metadata", () => {
+test("catalog keeps one original row per GPT model without Fast aliases", () => {
   const ids = [
     "gpt-5.6-sol",
     "openai/gpt-5.6-sol",
@@ -143,17 +149,22 @@ test("catalog advertises Fast for GPT models without upstream service tier metad
     },
   });
 
+  assert.deepEqual(result.models.map((model) => model.slug), ids);
+  assert.deepEqual(Object.keys(result.map), ids);
+  assert.deepEqual(result.forcedServiceTiers, {});
   for (const model of result.models) {
     assert.deepEqual(model.service_tiers, [{
       id: "priority",
       name: "Fast",
       description: "1.5x speed, increased usage",
     }]);
-    assert.equal(model.default_service_tier, null);
+    assert.equal(model.default_service_tier, "priority");
+    assert.doesNotMatch(model.slug, /^9codex-fast\//);
+    assert.doesNotMatch(model.display_name, /快速模式/);
   }
 });
 
-test("catalog exposes a selectable Fast model because Codex hides service tiers for custom providers", () => {
+test("catalog does not duplicate a GPT model to expose Fast mode", () => {
   const result = buildCatalog({
     upstream: { default_model: "cx/gpt-5.6-sol" },
     models: {
@@ -168,19 +179,11 @@ test("catalog exposes a selectable Fast model because Codex hides service tiers 
     },
   });
 
-  assert.equal(result.models.length, 2);
-  const fast = result.models.find((model) => model.display_name === "GPT 5.6 Sol · 快速模式");
-  assert.ok(fast);
-  assert.notEqual(fast.slug, "cx/gpt-5.6-sol");
-  assert.equal(result.map[fast.slug], "cx/gpt-5.6-sol");
-  assert.equal(result.forcedServiceTiers[fast.slug], "priority");
-  assert.equal(fast.context_window, 1_050_000);
-  assert.equal(fast.max_context_window, 1_050_000);
-  assert.equal(
-    fast.effective_context_window_percent,
-    result.models.find((model) => model.slug === "cx/gpt-5.6-sol")
-      .effective_context_window_percent,
-  );
+  assert.equal(result.models.length, 1);
+  assert.equal(result.models[0].slug, "cx/gpt-5.6-sol");
+  assert.equal(result.models[0].display_name, "GPT 5.6 Sol");
+  assert.equal(result.map["cx/gpt-5.6-sol"], "cx/gpt-5.6-sol");
+  assert.deepEqual(result.forcedServiceTiers, {});
 });
 
 test("catalog does not advertise Fast for non-GPT models even when upstream declares priority", () => {
@@ -264,7 +267,7 @@ test("catalog fails when no usable model metadata remains", () => {
 
 test("catalog exposes only explicitly selected models", () => {
   const result = buildCatalog({
-    upstream: { default_model: "model-a" },
+    upstream: { default_model: "model-b" },
     models: {
       namespace: "9codex",
       enabled_ids: ["model-b"],
@@ -278,16 +281,27 @@ test("catalog exposes only explicitly selected models", () => {
   assert.deepEqual(result.models.map((model) => model.slug), ["model-b"]);
 });
 
+test("catalog rejects a default model missing from the enabled model list", () => {
+  assert.throws(
+    () => buildCatalog({
+      upstream: { default_model: "missing" },
+      models: {
+        available: [{ id: "model-a", context_window: 64_000 }],
+      },
+    }),
+    /Default model "missing" is not enabled/,
+  );
+});
+
 test("writes only 9codex-owned catalog files and leaves Codex cache untouched", () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "9codex-catalog-test-"));
   const paths = resolvePaths(home);
-  fs.mkdirSync(paths.codexHome, { recursive: true });
-  const nativeCache = path.join(paths.codexHome, "models_cache.json");
-  fs.writeFileSync(nativeCache, "native-cache-sentinel");
+  const unrelated = path.join(home, "unrelated.json");
+  fs.writeFileSync(unrelated, "sentinel");
 
   writeCatalog(paths, buildCatalog(config()));
 
   assert.equal(JSON.parse(fs.readFileSync(paths.catalog, "utf8")).models.length, 1);
   assert.equal(JSON.parse(fs.readFileSync(paths.modelMap, "utf8")).public_to_upstream["vendor/model-a"], "vendor/model-a");
-  assert.equal(fs.readFileSync(nativeCache, "utf8"), "native-cache-sentinel");
+  assert.equal(fs.readFileSync(unrelated, "utf8"), "sentinel");
 });

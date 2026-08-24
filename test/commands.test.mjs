@@ -11,7 +11,7 @@ function command(overrides = {}) {
   return {
     command_id: "cmd_1",
     sequence: 1,
-    type: "codex.restart",
+    type: "service.restart",
     issued_at: "2026-08-01T08:00:00Z",
     expires_at: "2026-08-01T08:10:00Z",
     payload: {},
@@ -47,12 +47,12 @@ test("persists replay protection only after an accepted command succeeds", async
   const result = await executeCommand(command(), {
     paths,
     now: () => now,
-    config: { codex: { restart_policy: "automatic" } },
-    restartCodex: async () => { restarted += 1; return { codex_restarted: true }; },
+    config: {},
+    restartService: async () => { restarted += 1; },
   });
 
-  assert.equal(result.codex_restarted, true);
-  assert.equal(restarted, 1);
+  assert.equal(result.service_restart_requested, true);
+  assert.equal(restarted, 0);
   const state = JSON.parse(fs.readFileSync(paths.commandState, "utf8"));
   assert.equal(state.last_sequence, 1);
   assert.deepEqual(state.processed_ids, ["cmd_1"]);
@@ -60,11 +60,33 @@ test("persists replay protection only after an accepted command succeeds", async
     () => executeCommand(command(), {
       paths,
       now: () => now,
-      config: { codex: { restart_policy: "automatic" } },
-      restartCodex: async () => ({ codex_restarted: true }),
+      config: {},
+      restartService: async () => {},
     }),
     (error) => error.code === "duplicate_command",
   );
+});
+
+test("config refresh does not write or restart Codex", async () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "9codex-command-test-"));
+  const paths = resolvePaths(home);
+  const deferred = [];
+
+  const result = await executeCommand(command({ type: "config.refresh" }), {
+    paths,
+    now: () => now,
+    config: {},
+    syncConfig: async () => ({ changed: true, config: { control_plane: {} } }),
+    deferAfterAck: (operation) => deferred.push(operation),
+    restartService: async () => {},
+  });
+
+  assert.deepEqual(result, {
+    config_changed: true,
+    config_revision: null,
+    service_restart_requested: true,
+  });
+  assert.equal(deferred.length, 1);
 });
 
 test("failed commands remain replayable after the dependency recovers", async () => {
@@ -74,17 +96,22 @@ test("failed commands remain replayable after the dependency recovers", async ()
   const context = {
     paths,
     now: () => now,
-    config: { codex: { restart_policy: "automatic" } },
-    restartCodex: async () => {
-      if (!healthy) throw new Error("restart failed");
-      return { codex_restarted: true };
+    config: {},
+    syncConfig: async () => {
+      if (!healthy) throw new Error("refresh failed");
+      return { changed: false, config: { control_plane: {} } };
     },
   };
+  const refresh = command({ type: "config.refresh" });
 
-  await assert.rejects(() => executeCommand(command(), context), /restart failed/);
+  await assert.rejects(() => executeCommand(refresh, context), /refresh failed/);
   assert.equal(fs.existsSync(paths.commandState), false);
   healthy = true;
-  assert.deepEqual(await executeCommand(command(), context), { codex_restarted: true });
+  assert.deepEqual(await executeCommand(refresh, context), {
+    config_changed: false,
+    config_revision: null,
+    service_restart_requested: false,
+  });
 });
 
 test("allows only typed package update payloads and does not accept shell text", async () => {
@@ -98,7 +125,7 @@ test("allows only typed package update payloads and does not accept shell text",
     }), {
       paths,
       now: () => now,
-      config: { codex: { restart_policy: "automatic" } },
+      config: {},
       updatePackage: async () => ({ updated: true }),
     }),
     (error) => error.code === "invalid_payload",
