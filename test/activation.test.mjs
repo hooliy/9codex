@@ -134,7 +134,7 @@ test("install rewrites inconsistent catalog state from current authoritative met
   ]);
 });
 
-test("install rejects incomplete upstream metadata before service activation", async () => {
+test("install preserves upstream models without inventing missing context limits", async () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "9codex-activation-test-"));
   const paths = resolvePaths(home);
   const config = defaultConfig();
@@ -143,23 +143,24 @@ test("install rejects incomplete upstream metadata before service activation", a
   config.upstream.default_model = "fangan";
 
   let activations = 0;
-  await assert.rejects(
-    () => reconcileAndActivateInstallation(
-      paths,
-      config,
-      activationDependencies({
-        fetchImpl: async () => ({
-          ok: true,
-          json: async () => ({ data: [{ id: "fangan" }] }),
-        }),
-        installService: async () => { activations += 1; },
+  await reconcileAndActivateInstallation(
+    paths,
+    config,
+    activationDependencies({
+      fetchImpl: async () => ({
+        ok: true,
+        json: async () => ({ data: [{ id: "fangan" }] }),
       }),
-    ),
-    /context_window.*fangan|fangan.*context_window/,
+      installService: async () => { activations += 1; },
+    }),
   );
 
-  assert.equal(activations, 0);
-  assert.equal(fs.existsSync(paths.config), false);
+  assert.equal(activations, 1);
+  assert.equal(loadConfig(paths).models.available[0].id, "fangan");
+  assert.equal(Object.hasOwn(
+    JSON.parse(fs.readFileSync(paths.catalog, "utf8")).models[0],
+    "context_window",
+  ), false);
 });
 
 test("install preserves every active model-state byte when upstream reconciliation fails", async () => {

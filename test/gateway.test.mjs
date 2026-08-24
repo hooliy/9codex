@@ -650,7 +650,7 @@ test("rejects requests without the configured local bearer token", async (t) => 
   assert.equal((await response.json()).error.code, "invalid_local_token");
 });
 
-test("proxies image generation through the configured upstream image model", async (t) => {
+test("proxies image generation without forwarding text-model service tier fields", async (t) => {
   let captured;
   const upstream = http.createServer(async (req, res) => {
     const chunks = [];
@@ -685,12 +685,12 @@ test("proxies image generation through the configured upstream image model", asy
   assert.equal(captured.authorization, "Bearer upstream-secret");
   assert.equal(captured.accept, "application/json");
   assert.equal(captured.body.model, "cx/gpt-5.5-image");
-  assert.equal(captured.body.service_tier, "priority");
+  assert.equal(Object.hasOwn(captured.body, "service_tier"), false);
   assert.equal(captured.body.prompt, "a red panda");
   assert.equal(captured.body.size, "1024x1024");
 });
 
-test("image generation removes service tier for non-GPT models", async (t) => {
+test("image generation removes service tier for every image model", async (t) => {
   let capturedBody;
   const upstream = http.createServer(async (req, res) => {
     const chunks = [];

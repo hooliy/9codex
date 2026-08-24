@@ -13,6 +13,7 @@ const input = {
   model: "cx/gpt-5.6-sol",
   modelCatalogJson: "/state/models.json",
   baseUrl: "http://127.0.0.1:10101/v1",
+  home: "/home/test",
   token: "secret-token",
   command: "/opt/bin/codex",
   nodePath: "/opt/bin/node",
@@ -39,6 +40,10 @@ test("builds non-persistent Codex Desktop overrides with fast mode and MCP", () 
     "-c", 'multi_agent_mode="proactive"',
     "-c", 'mcp_servers.9codex.command="/opt/bin/node"',
     "-c", 'mcp_servers.9codex.args=["/opt/lib/9codex/bin/9codex.mjs","mcp"]',
+    "-c", 'mcp_servers.9codex.env={"NINECODEX_HOME"="/home/test"}',
+    "-c", "mcp_servers.9codex.enabled=true",
+    "-c", "mcp_servers.9codex.required=true",
+    "-c", 'mcp_servers.9codex.enabled_tools=["image_gen"]',
     "-c", 'mcp_servers.9codex.default_tools_approval_mode="approve"',
     "/work/project",
   ]);
@@ -61,6 +66,7 @@ test("launches through injected spawn and derives daemon values from config", ()
   const result = launchCodexDesktop({
     workspace: "/work/project",
     paths: { catalog: "/state/models.json" },
+    home: "/home/test",
     config: {
       local: {
         host: "127.0.0.1",
@@ -93,6 +99,9 @@ test("launches through injected spawn and derives daemon values from config", ()
   assert.ok(calls[0].args.includes(
     'mcp_servers.9codex.args=["/app/bin/9codex.mjs","mcp"]',
   ));
+  assert.ok(calls[0].args.includes(
+    'mcp_servers.9codex.env={"NINECODEX_HOME"="/home/test"}',
+  ));
   assert.equal(calls[0].options.env.HOME, "/home/test");
   assert.equal(calls[0].options.env[CODEX_AUTH_ENV], "local-secret");
   assert.doesNotMatch(calls[0].args.join(" "), /local-secret/);
@@ -110,4 +119,33 @@ test("prefers the packaged Codex executable without changing user config", () =>
     platform: "darwin",
     exists: (file) => file === "/Applications/ChatGPT.app/Contents/Resources/codex",
   }), "/Applications/ChatGPT.app/Contents/Resources/codex");
+});
+
+test("copies the Microsoft Store Codex CLI outside WindowsApps before launching it", () => {
+  const copied = [];
+  const directories = [];
+  const source = "C:\\Program Files\\WindowsApps\\OpenAI.Codex_1.2.3.0_x64__test\\app\\resources\\codex.exe";
+  const destination = "C:\\Users\\m\\.9codex\\codex-app-cli\\OpenAI.Codex_1.2.3.0_x64__test\\codex.exe";
+  assert.equal(resolveCodexCommand({
+    platform: "win32",
+    home: "C:\\Users\\m",
+    appxInstallLocation: "C:\\Program Files\\WindowsApps\\OpenAI.Codex_1.2.3.0_x64__test",
+    exists: (file) => file === source,
+    mkdir: (...args) => directories.push(args),
+    copyFile: (...args) => copied.push(args),
+  }), destination);
+  assert.deepEqual(copied, [[source, destination]]);
+  assert.deepEqual(directories, [[
+    "C:\\Users\\m\\.9codex\\codex-app-cli\\OpenAI.Codex_1.2.3.0_x64__test",
+    { recursive: true },
+  ]]);
+});
+
+test("finds the Codex CLI bundled by the Windows desktop runtime", () => {
+  assert.equal(resolveCodexCommand({
+    platform: "win32",
+    localAppData: "C:\\Users\\m\\AppData\\Local",
+    readdirSync: () => ["old", "new"],
+    exists: (file) => file === "C:\\Users\\m\\AppData\\Local\\OpenAI\\Codex\\bin\\new\\codex.exe",
+  }), "C:\\Users\\m\\AppData\\Local\\OpenAI\\Codex\\bin\\new\\codex.exe");
 });

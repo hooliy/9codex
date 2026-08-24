@@ -1,10 +1,14 @@
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
 import fs from "node:fs";
+import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
+import { defaultConfig, saveConfigAtomic } from "../lib/config.mjs";
 import { handleMcpRequest } from "../lib/mcp.mjs";
+import { resolvePaths } from "../lib/paths.mjs";
 
 function config() {
   return {
@@ -65,4 +69,65 @@ test("saves generated image bytes from the authenticated local gateway", async (
     fs.readFileSync(path.join(outputDir, fs.readdirSync(outputDir)[0])),
     Buffer.from("image"),
   );
+});
+
+test("CLI MCP process advertises and executes image_gen end to end", async (t) => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "9codex-mcp-process-test-"));
+  const paths = resolvePaths(home);
+  const gateway = http.createServer(async (req, res) => {
+    for await (const _chunk of req) {}
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify({ data: [{ b64_json: "aW1hZ2U=" }] }));
+  });
+  await new Promise((resolve) => gateway.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise((resolve) => gateway.close(resolve)));
+  const config = defaultConfig();
+  config.local.port = gateway.address().port;
+  config.upstream.image_model = "cx/gpt-5.5-image";
+  saveConfigAtomic(paths, config);
+  const child = spawn(process.execPath, [path.resolve("bin/9codex.mjs"), "mcp"], {
+    env: { ...process.env, NINECODEX_HOME: home },
+    stdio: ["pipe", "pipe", "pipe"],
+  });
+  t.after(() => child.kill());
+  let stdout = "";
+  let stderr = "";
+  child.stdout.on("data", (chunk) => { stdout += chunk; });
+  child.stderr.on("data", (chunk) => { stderr += chunk; });
+
+  for (const request of [
+    {
+      jsonrpc: "2.0",
+      id: 1,
+      method: "initialize",
+      params: {
+        protocolVersion: "2025-03-26",
+        capabilities: {},
+        clientInfo: { name: "test", version: "1" },
+      },
+    },
+    { jsonrpc: "2.0", method: "notifications/initialized", params: {} },
+    { jsonrpc: "2.0", id: 2, method: "tools/list", params: {} },
+    {
+      jsonrpc: "2.0",
+      id: 3,
+      method: "tools/call",
+      params: { name: "image_gen", arguments: { prompt: "a red panda" } },
+    },
+  ]) {
+    child.stdin.write(`${JSON.stringify(request)}\n`);
+  }
+  child.stdin.end();
+  await new Promise((resolve, reject) => {
+    child.once("error", reject);
+    child.once("close", resolve);
+  });
+
+  assert.equal(stderr, "");
+  const responses = stdout.trim().split("\n").map((line) => JSON.parse(line));
+  assert.deepEqual(responses.find((row) => row.id === 2).result.tools.map((tool) => tool.name), [
+    "image_gen",
+  ]);
+  assert.equal(responses.find((row) => row.id === 3).result.isError, undefined);
+  assert.equal(fs.readdirSync(paths.imagesDir).length, 1);
 });

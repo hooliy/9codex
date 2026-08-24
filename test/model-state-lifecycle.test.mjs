@@ -66,17 +66,16 @@ test("reconcileModelState commits one validated config/catalog/modelMap state", 
   assert.equal(validateModelState(paths, result.config), true);
 });
 
-test("reconcileModelState rejects metadata that cannot produce a native Codex catalog", async () => {
+test("reconcileModelState accepts metadata without invented context limits", async () => {
   const { paths, config } = fixture();
   config.upstream.default_model = "fangan";
 
-  await assert.rejects(
-    () => reconcileModelState(paths, config, {
-      authoritativeModels: [{ id: "fangan" }],
-    }),
-    /context_window.*fangan|fangan.*context_window/,
-  );
-  assert.equal(fs.existsSync(paths.config), false);
+  const result = await reconcileModelState(paths, config, {
+    authoritativeModels: [{ id: "fangan" }],
+  });
+  assert.equal(result.config.upstream.default_model, "fangan");
+  assert.deepEqual(result.built.models.map((row) => row.slug), ["fangan"]);
+  assert.equal(Object.hasOwn(result.built.models[0], "context_window"), false);
 });
 
 test("invalid authoritative metadata leaves all active state bytes unchanged", async () => {
@@ -287,6 +286,20 @@ test("validateAuthoritativeModels rejects empty, duplicate, and invalid token li
     () => validateAuthoritativeModels([{ ...model(), max_output_tokens: Infinity }]),
     /max_output_tokens/,
   );
+});
+
+test("keeps upstream aliases without invented context limits", () => {
+  assert.deepEqual(validateAuthoritativeModels([
+    { id: "Fast" },
+    model("model-a", 1_050_000),
+    { id: "Pro" },
+    { id: "Image" },
+  ]).map((row) => row.id), ["Fast", "model-a", "Pro", "Image"]);
+  assert.deepEqual(validateAuthoritativeModels([
+    { id: "Fast" },
+    { id: "Pro" },
+    { id: "Image" },
+  ]).map((row) => row.id), ["Fast", "Pro", "Image"]);
 });
 
 test("validateModelState detects catalog and model-map divergence", async () => {

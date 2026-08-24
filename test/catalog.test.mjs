@@ -54,6 +54,8 @@ test("catalog advertises only verified capabilities and enabled models", () => {
   assert.equal(result.models[0].default_service_tier, null);
   assert.match(result.models[0].base_instructions, /simple tasks directly/i);
   assert.match(result.models[0].base_instructions, /Codex native sub-agents in parallel/i);
+  assert.match(result.models[0].base_instructions, /call the mcp__9codex__image_gen tool/i);
+  assert.match(result.models[0].base_instructions, /Never answer an image-generation request without calling/i);
   assert.match(result.models[0].base_instructions, /Never use an external orchestrator/i);
   assert.match(result.models[0].base_instructions, /Do not restrict Codex native capabilities/i);
   assert.deepEqual(
@@ -103,9 +105,8 @@ test("catalog preserves the full upstream 372k context window", () => {
   assert.equal(model.context_window * model.effective_context_window_percent / 100, 372_000);
 });
 
-test("catalog rejects missing or invalid context windows", () => {
+test("catalog rejects explicitly invalid context windows", () => {
   for (const contextWindow of [
-    undefined,
     null,
     0,
     -1,
@@ -121,6 +122,16 @@ test("catalog rejects missing or invalid context windows", () => {
       /Invalid context_window for model "vendor\/model-a": expected a positive integer/,
     );
   }
+});
+
+test("catalog leaves routing alias context windows unspecified", () => {
+  const value = config();
+  value.upstream.default_model = "Fast";
+  value.models.available[0].id = "Fast";
+  delete value.models.available[0].context_window;
+  const model = buildCatalog(value).models[0];
+  assert.equal(Object.hasOwn(model, "context_window"), false);
+  assert.equal(Object.hasOwn(model, "truncation_policy"), false);
 });
 
 test("catalog rows include the experimental tool list required by Codex Desktop", () => {
