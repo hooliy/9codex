@@ -174,6 +174,8 @@ test("bridges Windows desktop launch into the interactive user session", () => {
   assert.match(launch.args.at(-1), /Unregister-ScheduledTask/);
   assert.match(launch.args.at(-1), /codex-launch-worker/);
   assert.match(launch.args.at(-1), /--restart/);
+  assert.match(launch.args.at(-1), /LastRunTime -eq \$before/);
+  assert.doesNotMatch(launch.args.at(-1), /LastRunTime -lt \$started/);
   assert.doesNotMatch(launch.args.join(" "), /secret-token/);
 });
 
