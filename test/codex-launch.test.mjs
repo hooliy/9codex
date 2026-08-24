@@ -3,9 +3,11 @@ import test from "node:test";
 
 import {
   CODEX_AUTH_ENV,
+  buildWindowsInteractiveLaunch,
   buildCodexLaunch,
   launchCodexDesktop,
   resolveCodexCommand,
+  terminateWindowsCodex,
 } from "../lib/codex-launch.mjs";
 
 const input = {
@@ -148,4 +150,45 @@ test("finds the Codex CLI bundled by the Windows desktop runtime", () => {
     readdirSync: () => ["old", "new"],
     exists: (file) => file === "C:\\Users\\m\\AppData\\Local\\OpenAI\\Codex\\bin\\new\\codex.exe",
   }), "C:\\Users\\m\\AppData\\Local\\OpenAI\\Codex\\bin\\new\\codex.exe");
+});
+
+test("bridges Windows desktop launch into the interactive user session", () => {
+  const launch = buildWindowsInteractiveLaunch({
+    platform: "win32",
+    workspace: "C:\\work\\project",
+    model: "cx/gpt-5.6-sol",
+    modelCatalogJson: "C:\\Users\\m\\.9codex\\catalog.json",
+    baseUrl: "http://127.0.0.1:10101/v1",
+    home: "C:\\Users\\m",
+    token: "secret-token",
+    command: "C:\\Users\\m\\AppData\\Local\\OpenAI\\Codex\\bin\\new\\codex.exe",
+    nodePath: "C:\\Program Files\\nodejs\\node.exe",
+    cliPath: "C:\\Users\\m\\AppData\\Roaming\\npm\\node_modules\\@hooliy\\9codex\\bin\\9codex.mjs",
+    restart: true,
+  });
+
+  assert.equal(launch.command, "powershell.exe");
+  assert.match(launch.args.at(-1), /Register-ScheduledTask/);
+  assert.match(launch.args.at(-1), /-LogonType Interactive/);
+  assert.match(launch.args.at(-1), /Start-ScheduledTask/);
+  assert.match(launch.args.at(-1), /Unregister-ScheduledTask/);
+  assert.match(launch.args.at(-1), /codex-launch-worker/);
+  assert.match(launch.args.at(-1), /--restart/);
+  assert.doesNotMatch(launch.args.join(" "), /secret-token/);
+});
+
+test("Windows Codex shutdown is scoped to the installed Codex package", () => {
+  const calls = [];
+  terminateWindowsCodex({
+    spawn(command, args, options) {
+      calls.push({ command, args, options });
+      return {};
+    },
+  });
+
+  assert.equal(calls[0].command, "powershell.exe");
+  assert.match(calls[0].args.at(-1), /Get-AppxPackage -Name OpenAI\.Codex/);
+  assert.match(calls[0].args.at(-1), /StartsWith\(\$root/);
+  assert.match(calls[0].args.at(-1), /ChatGPT\.exe/);
+  assert.match(calls[0].args.at(-1), /codex\.exe/);
 });
