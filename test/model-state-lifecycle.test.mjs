@@ -66,16 +66,22 @@ test("reconcileModelState commits one validated config/catalog/modelMap state", 
   assert.equal(validateModelState(paths, result.config), true);
 });
 
-test("reconcileModelState accepts metadata without invented context limits", async () => {
+test("reconcileModelState skips routing aliases without invented context limits", async () => {
   const { paths, config } = fixture();
-  config.upstream.default_model = "fangan";
+  config.upstream.default_model = "Fast";
 
   const result = await reconcileModelState(paths, config, {
-    authoritativeModels: [{ id: "fangan" }],
+    authoritativeModels: [
+      { id: "Fast" },
+      model("ds/deepseek-v4-pro", 256_000),
+      model("cx/gpt-5.6-sol", 1_050_000),
+    ],
   });
-  assert.equal(result.config.upstream.default_model, "fangan");
-  assert.deepEqual(result.built.models.map((row) => row.slug), ["fangan"]);
-  assert.equal(Object.hasOwn(result.built.models[0], "context_window"), false);
+  assert.equal(result.config.upstream.default_model, "cx/gpt-5.6-sol");
+  assert.deepEqual(result.built.models.map((row) => row.slug), [
+    "ds/deepseek-v4-pro",
+    "cx/gpt-5.6-sol",
+  ]);
 });
 
 test("invalid authoritative metadata leaves all active state bytes unchanged", async () => {
@@ -288,18 +294,17 @@ test("validateAuthoritativeModels rejects empty, duplicate, and invalid token li
   );
 });
 
-test("keeps upstream aliases without invented context limits", () => {
+test("skips upstream aliases without invented context limits", () => {
   assert.deepEqual(validateAuthoritativeModels([
     { id: "Fast" },
     model("model-a", 1_050_000),
     { id: "Pro" },
     { id: "Image" },
-  ]).map((row) => row.id), ["Fast", "model-a", "Pro", "Image"]);
-  assert.deepEqual(validateAuthoritativeModels([
-    { id: "Fast" },
-    { id: "Pro" },
-    { id: "Image" },
-  ]).map((row) => row.id), ["Fast", "Pro", "Image"]);
+  ]).map((row) => row.id), ["model-a"]);
+  assert.throws(
+    () => validateAuthoritativeModels([{ id: "Fast" }, { id: "Pro" }, { id: "Image" }]),
+    /No usable model metadata available/,
+  );
 });
 
 test("validateModelState detects catalog and model-map divergence", async () => {

@@ -215,7 +215,7 @@ test("does not replace the active config when bootstrap is malformed", async (t)
   assert.equal(fs.readFileSync(paths.config, "utf8"), before);
 });
 
-test("accepts unspecified bootstrap context but rejects explicit invalid limits atomically", async (t) => {
+test("rejects incomplete or invalid bootstrap context atomically", async (t) => {
   let models = [];
   const fixture = await fixtureServer((req, res) => {
     res.setHeader("content-type", "application/json");
@@ -244,17 +244,18 @@ test("accepts unspecified bootstrap context but rejects explicit invalid limits 
   assert.deepEqual(modelStateBytes(paths), before, "empty");
 
   models = [{ id: "new-model" }];
-  const synced = await syncBootstrap(paths, config);
-  assert.equal(synced.config.models.available[0].id, "new-model");
-  assert.equal(Object.hasOwn(synced.config.models.available[0], "context_window"), false);
-  const accepted = modelStateBytes(paths);
+  await assert.rejects(
+    () => syncBootstrap(paths, config),
+    /context_window.*new-model|new-model.*context_window/,
+  );
+  assert.deepEqual(modelStateBytes(paths), before, "missing context");
 
   models = [{ id: "new-model", context_window: 0 }];
   await assert.rejects(
     () => syncBootstrap(paths, config),
     /context_window.*new-model|new-model.*context_window/,
   );
-  assert.deepEqual(modelStateBytes(paths), accepted, "invalid context");
+  assert.deepEqual(modelStateBytes(paths), before, "invalid context");
 });
 
 test("surfaces explicit server revocation without deleting local configuration", async (t) => {

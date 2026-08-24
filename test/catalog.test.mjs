@@ -124,16 +124,6 @@ test("catalog rejects explicitly invalid context windows", () => {
   }
 });
 
-test("catalog leaves routing alias context windows unspecified", () => {
-  const value = config();
-  value.upstream.default_model = "Fast";
-  value.models.available[0].id = "Fast";
-  delete value.models.available[0].context_window;
-  const model = buildCatalog(value).models[0];
-  assert.equal(Object.hasOwn(model, "context_window"), false);
-  assert.equal(Object.hasOwn(model, "truncation_policy"), false);
-});
-
 test("catalog rows include the experimental tool list required by Codex Desktop", () => {
   const result = buildCatalog(config());
 
