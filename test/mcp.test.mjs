@@ -29,6 +29,21 @@ test("advertises only the headless image tool", async () => {
   assert.equal(response.result.tools[0].inputSchema.required.includes("prompt"), true);
 });
 
+test("answers optional MCP discovery methods without failing tool discovery", async () => {
+  const config = {
+    local: { host: "127.0.0.1", port: 10101, token: "token" },
+    upstream: { image_model: "image-model" },
+  };
+  for (const [method, key] of [
+    ["resources/list", "resources"],
+    ["resources/templates/list", "resourceTemplates"],
+    ["prompts/list", "prompts"],
+  ]) {
+    const result = await handleMcpRequest(config, { jsonrpc: "2.0", id: 1, method });
+    assert.deepEqual(result.result[key], []);
+  }
+});
+
 test("rejects removed task orchestrator tools", async () => {
   const response = await handleMcpRequest(config(), {
     jsonrpc: "2.0",
