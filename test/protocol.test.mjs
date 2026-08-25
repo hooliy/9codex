@@ -97,6 +97,22 @@ test("drops a tool call pair when its output contains unsupported image content"
   assert.deepEqual(result.input, [{ role: "user", content: "continue" }]);
 });
 
+test("drops historical function calls whose output is missing", () => {
+  const result = normalizeResponsesRequest({
+    input: [
+      {
+        type: "function_call",
+        call_id: "call_missing",
+        name: "view_image",
+        arguments: "{}",
+      },
+      { role: "user", content: "continue" },
+    ],
+  });
+
+  assert.deepEqual(result.input, [{ role: "user", content: "continue" }]);
+});
+
 test("flattens textual tool output arrays", () => {
   const result = normalizeResponsesRequest({
     input: [
