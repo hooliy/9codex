@@ -136,6 +136,66 @@ test("flattens textual tool output arrays", () => {
   assert.equal(result.input[1].output, "onetwo");
 });
 
+test("preserves parallel textual tool output across interleaved messages", () => {
+  const result = normalizeResponsesRequest({
+    input: [
+      {
+        type: "function_call",
+        call_id: "call_image_1",
+        name: "view_image",
+        arguments: "{}",
+      },
+      {
+        type: "function_call",
+        call_id: "call_image_2",
+        name: "view_image",
+        arguments: "{}",
+      },
+      {
+        type: "function_call",
+        call_id: "call_exec",
+        name: "exec_command",
+        arguments: "{}",
+      },
+      {
+        type: "function_call_output",
+        call_id: "call_image_1",
+        output: [{ type: "input_image", image_url: "data:image/png;base64,abc" }],
+      },
+      {
+        role: "developer",
+        content: "<image_resize_notice>resized</image_resize_notice>",
+      },
+      {
+        type: "function_call_output",
+        call_id: "call_image_2",
+        output: [{ type: "input_image", image_url: "data:image/png;base64,def" }],
+      },
+      {
+        type: "function_call_output",
+        call_id: "call_exec",
+        output: "command output",
+      },
+      { role: "user", content: "continue" },
+    ],
+  });
+
+  assert.deepEqual(result.input, [
+    {
+      type: "function_call",
+      call_id: "call_exec",
+      name: "exec_command",
+      arguments: "{}",
+    },
+    {
+      type: "function_call_output",
+      call_id: "call_exec",
+      output: "command output",
+    },
+    { role: "user", content: "continue" },
+  ]);
+});
+
 test("applies only explicit Responses compatibility field rules", () => {
   const result = applyCompatibilityProfile({
     model: "model-a",
