@@ -48,6 +48,10 @@ Launch Codex through the daemon:
 9codex app /absolute/workspace/path
 ```
 
+`9codex install`, `9codex restart`, and automatic updates stay headless. They do
+not open or navigate Desktop. Use `9codex app` explicitly; `--open` is an
+explicit opt-in for install/restart.
+
 The Desktop launch environment points to the 9codex-owned wrapper. It supplies
 the 9codex provider, live model catalog, MCP, native multi-agent, Fast, high
 reasoning, high verbosity, and detailed reasoning summary. A running Desktop

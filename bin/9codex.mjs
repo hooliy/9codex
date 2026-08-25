@@ -195,13 +195,18 @@ async function waitForChild(child, label) {
   });
 }
 
-async function launchCodex(config, workspace, { bridge = true } = {}) {
+async function launchCodex(
+  config,
+  workspace,
+  { bridge = true, openWorkspace = true } = {},
+) {
   const child = launchCodexDesktop({
     config,
     paths,
     workspace,
     platform: process.platform,
     interactiveSessionBridge: bridge,
+    openWorkspace,
     nodePath: process.execPath,
     cliPath,
   });
@@ -229,8 +234,18 @@ try {
     }
     case "install": {
       const result = await install(loadConfig(paths));
-      await launchCodex(result.config || loadConfig(paths), process.cwd());
-      console.log(JSON.stringify({ installed: true, codex_opened: true, ...result }, null, 2));
+      if (args.includes("--open")) {
+        await launchCodex(
+          result.config || loadConfig(paths),
+          process.cwd(),
+          { openWorkspace: false },
+        );
+      }
+      console.log(JSON.stringify({
+        installed: true,
+        codex_opened: args.includes("--open"),
+        ...result,
+      }, null, 2));
       break;
     }
     case "sync": {
@@ -271,8 +286,18 @@ try {
       repairLocalModelState(paths, loadConfig(paths));
       await restartService(paths);
       if (!(await waitForHealth(loadConfig(paths)))) throw new Error("9codex service restart failed");
-      await launchCodex(loadConfig(paths), process.cwd());
-      console.log("9codex service restarted; Codex opened without terminating the existing session.");
+      if (args.includes("--open")) {
+        await launchCodex(
+          loadConfig(paths),
+          process.cwd(),
+          { openWorkspace: false },
+        );
+      }
+      console.log(
+        args.includes("--open")
+          ? "9codex service restarted; Codex opened."
+          : "9codex service restarted.",
+      );
       break;
     case "auth-token":
       process.stdout.write(`${loadConfig(paths).local.token}\n`);

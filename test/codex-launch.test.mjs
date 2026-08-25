@@ -121,7 +121,6 @@ test("launches macOS Desktop through the 9codex wrapper", () => {
   assert.equal(calls.length, 1);
   assert.equal(calls[0].command, "/bin/sh");
   assert.match(calls[0].args.at(-1), /launchctl setenv CODEX_CLI_PATH/);
-  assert.match(calls[0].args.at(-1), /com\.openai\.codex/);
   assert.match(calls[0].args.at(-1), /codex:\/\/threads\/new\?path=/);
   assert.doesNotMatch(calls[0].args.join(" "), /secret-token|config\.toml/);
 });
@@ -157,6 +156,7 @@ test("macOS launch restarts Desktop only when its app-server lacks the gateway c
     workspace: "/work/project",
     wrapperPath: "/home/test/.9codex/codex-wrapper-test",
     restartDesktop: true,
+    openWorkspace: false,
   });
 
   assert.equal(launch.command, "/bin/sh");
@@ -165,7 +165,8 @@ test("macOS launch restarts Desktop only when its app-server lacks the gateway c
   assert.match(launch.args.at(-1), /desktop_pid=/);
   assert.match(launch.args.at(-1), /kill -TERM "\$desktop_pid"/);
   assert.match(launch.args.at(-1), /kill -KILL "\$desktop_pid"/);
-  assert.match(launch.args.at(-1), /\/usr\/bin\/open/);
+  assert.match(launch.args.at(-1), /\/usr\/bin\/open -b com\.openai\.codex/);
+  assert.doesNotMatch(launch.args.at(-1), /codex:\/\/|threads\/new/);
 });
 
 test("detects only a gateway-backed macOS Desktop app-server", () => {
@@ -190,9 +191,11 @@ test("does not restart an already integrated macOS Desktop", () => {
     workspace: "/work/project",
     wrapperPath: "/home/test/.9codex/codex-wrapper-test",
     restartDesktop: false,
+    openWorkspace: false,
   });
   assert.doesNotMatch(launch.args.at(-1), /osascript|quit/);
-  assert.match(launch.args.at(-1), /\/usr\/bin\/open/);
+  assert.match(launch.args.at(-1), /\/usr\/bin\/open -b com\.openai\.codex/);
+  assert.doesNotMatch(launch.args.at(-1), /codex:\/\/|threads\/new/);
 });
 
 test("prefers the packaged Codex executable without changing user config", () => {

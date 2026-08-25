@@ -86,3 +86,13 @@ test("removed UI and orchestrator commands are unavailable", () => {
     assert.match(result.stderr, /Commands:/, command);
   }
 });
+
+test("install and restart stay headless unless --open is explicit", () => {
+  const source = fs.readFileSync(cli, "utf8");
+  const install = source.slice(source.indexOf('case "install"'), source.indexOf('case "sync"'));
+  const restart = source.slice(source.indexOf('case "restart"'), source.indexOf('case "auth-token"'));
+  assert.match(install, /args\.includes\("--open"\)/);
+  assert.match(restart, /args\.includes\("--open"\)/);
+  assert.doesNotMatch(install.replace(/if \(args\.includes\("--open"\)\) \{[\s\S]*?\n      \}/, ""), /launchCodex/);
+  assert.doesNotMatch(restart.replace(/if \(args\.includes\("--open"\)\) \{[\s\S]*?\n      \}/, ""), /launchCodex/);
+});
