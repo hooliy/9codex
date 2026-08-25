@@ -162,8 +162,9 @@ test("macOS launch restarts Desktop only when its app-server lacks the gateway c
   assert.equal(launch.command, "/bin/sh");
   assert.match(launch.args.at(-1), /osascript/);
   assert.match(launch.args.at(-1), /tell application id "com\.openai\.codex" to quit/);
-  assert.match(launch.args.at(-1), /pkill -TERM/);
-  assert.match(launch.args.at(-1), /pkill -KILL/);
+  assert.match(launch.args.at(-1), /desktop_pid=/);
+  assert.match(launch.args.at(-1), /kill -TERM "\$desktop_pid"/);
+  assert.match(launch.args.at(-1), /kill -KILL "\$desktop_pid"/);
   assert.match(launch.args.at(-1), /\/usr\/bin\/open/);
 });
 
