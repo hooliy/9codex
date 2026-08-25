@@ -5,9 +5,12 @@ import path from "node:path";
 import test from "node:test";
 
 import {
+  buildMacDesktopLaunch,
   buildWindowsInteractiveLaunch,
   buildCodexAppServerArguments,
   launchCodexDesktop,
+  macDesktopUsesIntegration,
+  prepareCodexDesktopIntegration,
   resolveCodexCommand,
 } from "../lib/codex-launch.mjs";
 
@@ -95,6 +98,98 @@ test("launches Desktop directly with the generated wrapper instead of codex app"
   assert.match(calls[0].args.at(-1), /CODEX_CLI_PATH/);
   assert.match(calls[0].args.at(-1), /codex-wrapper\.exe/);
   assert.doesNotMatch(calls[0].args.join(" "), /local-secret|codex app/);
+});
+
+test("launches macOS Desktop through the 9codex wrapper", () => {
+  const calls = [];
+  const child = {};
+  const result = launchCodexDesktop({
+    ...input,
+    paths: { catalog: "/state/models.json" },
+    platform: "darwin",
+    desktopUsesIntegration: () => false,
+    prepareIntegration: () => ({
+      wrapperPath: "/home/test/.9codex/codex-wrapper-test",
+    }),
+    spawn(command, args, options) {
+      calls.push({ command, args, options });
+      return child;
+    },
+  });
+
+  assert.equal(result, child);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].command, "/bin/sh");
+  assert.match(calls[0].args.at(-1), /launchctl setenv CODEX_CLI_PATH/);
+  assert.match(calls[0].args.at(-1), /com\.openai\.codex/);
+  assert.match(calls[0].args.at(-1), /codex:\/\/threads\/new\?path=/);
+  assert.doesNotMatch(calls[0].args.join(" "), /secret-token|config\.toml/);
+});
+
+test("builds an executable macOS wrapper without modifying Codex files", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "9codex-mac-wrapper-test-"));
+  const paths = {
+    home: root,
+    stateDir: path.join(root, ".9codex"),
+    catalog: path.join(root, ".9codex", "catalog.json"),
+    codexWrapperArgs: path.join(root, ".9codex", "codex-wrapper.args"),
+    codexWrapperCurrent: path.join(root, ".9codex", "codex-wrapper.current"),
+  };
+
+  const integration = prepareCodexDesktopIntegration({
+    ...input,
+    platform: "darwin",
+    paths,
+  });
+
+  const source = fs.readFileSync(integration.wrapperPath, "utf8");
+  assert.match(source, /^#!\/bin\/sh/);
+  assert.match(source, /app-server/);
+  assert.match(source, /exec '\/opt\/bin\/codex'/);
+  assert.match(source, /model_provider="9codex"/);
+  assert.equal(fs.statSync(integration.wrapperPath).mode & 0o777, 0o700);
+  assert.equal(fs.existsSync(path.join(root, ".codex", "config.toml")), false);
+  assert.doesNotMatch(source, /secret-token/);
+});
+
+test("macOS launch restarts Desktop only when its app-server lacks the gateway catalog", () => {
+  const launch = buildMacDesktopLaunch({
+    workspace: "/work/project",
+    wrapperPath: "/home/test/.9codex/codex-wrapper-test",
+    restartDesktop: true,
+  });
+
+  assert.equal(launch.command, "/bin/sh");
+  assert.match(launch.args.at(-1), /osascript/);
+  assert.match(launch.args.at(-1), /tell application id "com\.openai\.codex" to quit/);
+  assert.match(launch.args.at(-1), /\/usr\/bin\/open/);
+});
+
+test("detects only a gateway-backed macOS Desktop app-server", () => {
+  const catalog = "/home/test/.9codex/catalog.json";
+  const processList = [
+    " 100 1 /Applications/ChatGPT.app/Contents/MacOS/ChatGPT",
+    ` 101 100 /Applications/ChatGPT.app/Contents/Resources/codex -c model_provider="9codex" -c model_catalog_json="${catalog}" app-server`,
+    ` 102 1 /opt/bin/codex -c model_provider="9codex" -c model_catalog_json="${catalog}" app-server`,
+  ].join("\n");
+  assert.equal(macDesktopUsesIntegration({
+    catalogPath: catalog,
+    execFileSync: () => processList,
+  }), true);
+  assert.equal(macDesktopUsesIntegration({
+    catalogPath: "/another/catalog.json",
+    execFileSync: () => processList,
+  }), false);
+});
+
+test("does not restart an already integrated macOS Desktop", () => {
+  const launch = buildMacDesktopLaunch({
+    workspace: "/work/project",
+    wrapperPath: "/home/test/.9codex/codex-wrapper-test",
+    restartDesktop: false,
+  });
+  assert.doesNotMatch(launch.args.at(-1), /osascript|quit/);
+  assert.match(launch.args.at(-1), /\/usr\/bin\/open/);
 });
 
 test("prefers the packaged Codex executable without changing user config", () => {

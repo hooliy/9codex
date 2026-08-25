@@ -18,14 +18,15 @@ sub-agents in parallel. There is no external task orchestrator and no 9codex UI.
 - Codex update files or renderer DOM
 
 `9codex app` generates a private wrapper in `~/.9codex` and points the current
-Windows user's `CODEX_CLI_PATH` to it. The wrapper injects Codex CLI `-c`
-overrides only when Desktop starts `app-server`; it never edits Codex files.
-Uninstall removes that environment value only when 9codex still owns it.
+user's `CODEX_CLI_PATH` to it. Windows uses the user environment; macOS uses the
+user launch environment. The wrapper injects Codex CLI `-c` overrides only when
+Desktop starts `app-server`; it never edits Codex files. Uninstall removes that
+environment value only when 9codex still owns it.
 Existing Codex history remains in the original `CODEX_HOME`.
 
 ## Requirements
 
-- Codex Desktop
+- Codex Desktop on Windows or macOS
 - Node.js 24 or newer
 - an OpenAI-compatible upstream URL and API key
 
@@ -47,10 +48,11 @@ Launch Codex through the daemon:
 9codex app /absolute/workspace/path
 ```
 
-The launch is process-scoped. It supplies the 9codex provider, live model
-catalog, MCP, native multi-agent, Fast, high reasoning, high verbosity, and
-detailed reasoning summary. A running Desktop process is restarted once only
-when its app-server is not already using the 9codex catalog.
+The Desktop launch environment points to the 9codex-owned wrapper. It supplies
+the 9codex provider, live model catalog, MCP, native multi-agent, Fast, high
+reasoning, high verbosity, and detailed reasoning summary. A running Desktop
+process is restarted once only when its app-server is not already using the
+9codex catalog.
 
 ## Default execution policy
 

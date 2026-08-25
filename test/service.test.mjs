@@ -181,6 +181,30 @@ test("Windows uninstall also terminates a validated recorded daemon", async () =
   assert.match(environmentCleanup[1].at(-1), /codex-wrapper-/);
 });
 
+test("macOS uninstall clears only a 9codex-owned Desktop wrapper", async () => {
+  const paths = resolvePaths(fs.mkdtempSync(path.join(os.tmpdir(), "9codex-service-test-")));
+  const calls = [];
+  await uninstallService(paths, {
+    platform: "darwin",
+    run: async (file, args) => {
+      calls.push([file, args]);
+      if (args[0] === "getenv") {
+        return {
+          status: 0,
+          stdout: `${path.join(paths.stateDir, "codex-wrapper-1234")}\n`,
+          stderr: "",
+        };
+      }
+      return 0;
+    },
+  });
+
+  assert.deepEqual(
+    calls.find(([, args]) => args[0] === "unsetenv"),
+    ["/bin/launchctl", ["unsetenv", "CODEX_CLI_PATH"]],
+  );
+});
+
 test("Windows install terminates stale daemon loops and rotates the daemon log before registering", async () => {
   const paths = resolvePaths(fs.mkdtempSync(path.join(os.tmpdir(), "9codex-service-test-")));
   fs.mkdirSync(paths.logDir, { recursive: true });
