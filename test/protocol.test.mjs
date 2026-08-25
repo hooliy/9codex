@@ -76,6 +76,50 @@ test("flattens Responses text arrays without changing tool definitions", () => {
   assert.deepEqual(result.tools, tools);
 });
 
+test("drops a tool call pair when its output contains unsupported image content", () => {
+  const result = normalizeResponsesRequest({
+    input: [
+      {
+        type: "function_call",
+        call_id: "call_image",
+        name: "view_image",
+        arguments: "{}",
+      },
+      {
+        type: "function_call_output",
+        call_id: "call_image",
+        output: [{ type: "input_image", image_url: "data:image/png;base64,abc" }],
+      },
+      { role: "user", content: "continue" },
+    ],
+  });
+
+  assert.deepEqual(result.input, [{ role: "user", content: "continue" }]);
+});
+
+test("flattens textual tool output arrays", () => {
+  const result = normalizeResponsesRequest({
+    input: [
+      {
+        type: "function_call",
+        call_id: "call_text",
+        name: "read_file",
+        arguments: "{}",
+      },
+      {
+        type: "function_call_output",
+        call_id: "call_text",
+        output: [
+          { type: "input_text", text: "one" },
+          { type: "text", text: "two" },
+        ],
+      },
+    ],
+  });
+
+  assert.equal(result.input[1].output, "onetwo");
+});
+
 test("applies only explicit Responses compatibility field rules", () => {
   const result = applyCompatibilityProfile({
     model: "model-a",

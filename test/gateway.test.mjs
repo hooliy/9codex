@@ -741,6 +741,67 @@ test("native Responses drops an incompatible historical item when empty content 
   ]);
 });
 
+test("native Responses drops a tool pair when upstream reports its output missing", async (t) => {
+  const capturedBodies = [];
+  const upstream = http.createServer(async (req, res) => {
+    const chunks = [];
+    for await (const chunk of req) chunks.push(chunk);
+    capturedBodies.push(JSON.parse(Buffer.concat(chunks).toString("utf8")));
+    if (capturedBodies.length === 1) {
+      res.writeHead(400, { "content-type": "application/json" });
+      res.end(JSON.stringify({
+        error: {
+          message: "No tool output found for function call call_bad.",
+          type: "invalid_request_error",
+          param: "input",
+          code: null,
+        },
+      }));
+      return;
+    }
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify({ id: "resp_test", object: "response", output: [] }));
+  });
+  const upstreamUrl = await listen(upstream);
+  t.after(() => new Promise((resolve) => upstream.close(resolve)));
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "9codex-gateway-test-"));
+  const paths = resolvePaths(home);
+  const config = gatewayConfig(upstreamUrl);
+  await routingFixture(paths, config);
+  const gateway = createGateway(config, paths);
+  const gatewayUrl = await listen(gateway);
+  t.after(() => new Promise((resolve) => gateway.close(resolve)));
+
+  const response = await fetch(`${gatewayUrl}/v1/responses`, {
+    method: "POST",
+    headers: {
+      authorization: "Bearer 9codex_local_test",
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      model: "raw/model",
+      input: [
+        {
+          type: "function_call",
+          call_id: "call_bad",
+          name: "read_file",
+          arguments: "{}",
+        },
+        {
+          type: "function_call_output",
+          call_id: "call_bad",
+          output: "contents",
+        },
+        { role: "user", content: "continue" },
+      ],
+      stream: false,
+    }),
+  });
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(capturedBodies[1].input, [{ role: "user", content: "continue" }]);
+});
+
 test("gateway routes the catalog model id without rewriting it", async (t) => {
   let upstreamModel;
   const upstream = http.createServer(async (req, res) => {
