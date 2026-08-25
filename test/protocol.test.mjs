@@ -53,7 +53,7 @@ test("removes historical reasoning while preserving valid Responses tool calls",
   ]);
 });
 
-test("coalesces adjacent Responses text parts without changing tool definitions", () => {
+test("flattens Responses text arrays without changing tool definitions", () => {
   const tools = [
     { type: "custom", name: "apply_patch", format: { type: "grammar" } },
     { type: "namespace", name: "multi_agent_v1", tools: [] },
@@ -72,7 +72,7 @@ test("coalesces adjacent Responses text parts without changing tool definitions"
     tools,
   });
 
-  assert.deepEqual(result.input[0].content, [{ type: "input_text", text: "onetwo" }]);
+  assert.equal(result.input[0].content, "onetwo");
   assert.deepEqual(result.tools, tools);
 });
 

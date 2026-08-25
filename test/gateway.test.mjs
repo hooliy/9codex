@@ -579,7 +579,7 @@ test("native Responses streams the first upstream bytes before completion", asyn
   assert.match(Buffer.from(second.value).toString("utf8"), /response\.completed/);
 });
 
-test("native Responses routing coalesces split text content before forwarding", async (t) => {
+test("native Responses routing flattens split text content before forwarding", async (t) => {
   let capturedBody;
   const upstream = http.createServer(async (req, res) => {
     const chunks = [];
@@ -623,10 +623,122 @@ test("native Responses routing coalesces split text content before forwarding", 
   });
 
   assert.equal(response.status, 200);
-  assert.deepEqual(capturedBody.input[0].content, [{
-    type: "input_text",
-    text: "<app-context><skills><permissions><collaboration><plugins>",
-  }]);
+  assert.equal(
+    capturedBody.input[0].content,
+    "<app-context><skills><permissions><collaboration><plugins>",
+  );
+});
+
+test("native Responses drops model-specific invalid content and retries", async (t) => {
+  const capturedBodies = [];
+  const upstream = http.createServer(async (req, res) => {
+    const chunks = [];
+    for await (const chunk of req) chunks.push(chunk);
+    capturedBodies.push(JSON.parse(Buffer.concat(chunks).toString("utf8")));
+    if (capturedBodies.length === 1) {
+      res.writeHead(400, { "content-type": "application/json" });
+      res.end(JSON.stringify({
+        error: {
+          message: "Invalid 'input[3].content': array too long. Expected an array with maximum length 0, but got an array with length 1 instead.",
+          type: "invalid_request_error",
+          param: "input[3].content",
+          code: "array_above_max_length",
+        },
+      }));
+      return;
+    }
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify({ id: "resp_test", object: "response", output: [] }));
+  });
+  const upstreamUrl = await listen(upstream);
+  t.after(() => new Promise((resolve) => upstream.close(resolve)));
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "9codex-gateway-test-"));
+  const paths = resolvePaths(home);
+  const config = gatewayConfig(upstreamUrl);
+  await routingFixture(paths, config);
+  const gateway = createGateway(config, paths);
+  const gatewayUrl = await listen(gateway);
+  t.after(() => new Promise((resolve) => gateway.close(resolve)));
+
+  const response = await fetch(`${gatewayUrl}/v1/responses`, {
+    method: "POST",
+    headers: {
+      authorization: "Bearer 9codex_local_test",
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      model: "raw/model",
+      input: [
+        { role: "developer", content: "rules" },
+        { role: "user", content: "question" },
+        { role: "assistant", content: "answer" },
+        { role: "assistant", content: [{ type: "refusal", refusal: "legacy" }] },
+        { role: "user", content: "continue" },
+      ],
+      stream: false,
+    }),
+  });
+
+  assert.equal(response.status, 200);
+  assert.equal(capturedBodies.length, 2);
+  assert.deepEqual(capturedBodies[1].input[3].content, []);
+  assert.equal(capturedBodies[1].input[4].content, "continue");
+});
+
+test("native Responses drops an incompatible historical item when empty content is still rejected", async (t) => {
+  const capturedBodies = [];
+  const upstream = http.createServer(async (req, res) => {
+    const chunks = [];
+    for await (const chunk of req) chunks.push(chunk);
+    capturedBodies.push(JSON.parse(Buffer.concat(chunks).toString("utf8")));
+    if (capturedBodies.length < 3) {
+      res.writeHead(400, { "content-type": "application/json" });
+      res.end(JSON.stringify({
+        error: {
+          message: "Invalid 'input[1].content'",
+          type: "invalid_request_error",
+          param: "input[1].content",
+          code: "invalid_value",
+        },
+      }));
+      return;
+    }
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify({ id: "resp_test", object: "response", output: [] }));
+  });
+  const upstreamUrl = await listen(upstream);
+  t.after(() => new Promise((resolve) => upstream.close(resolve)));
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "9codex-gateway-test-"));
+  const paths = resolvePaths(home);
+  const config = gatewayConfig(upstreamUrl);
+  await routingFixture(paths, config);
+  const gateway = createGateway(config, paths);
+  const gatewayUrl = await listen(gateway);
+  t.after(() => new Promise((resolve) => gateway.close(resolve)));
+
+  const response = await fetch(`${gatewayUrl}/v1/responses`, {
+    method: "POST",
+    headers: {
+      authorization: "Bearer 9codex_local_test",
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      model: "raw/model",
+      input: [
+        { role: "developer", content: "rules" },
+        { role: "assistant", content: [{ type: "legacy", value: "bad" }] },
+        { role: "user", content: "continue" },
+      ],
+      stream: false,
+    }),
+  });
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(capturedBodies[1].input[1].content, []);
+  assert.deepEqual(capturedBodies[2].input, [
+    { role: "developer", content: "rules" },
+    { role: "user", content: "continue" },
+  ]);
 });
 
 test("gateway routes the catalog model id without rewriting it", async (t) => {
