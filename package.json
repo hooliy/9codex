@@ -1,6 +1,6 @@
 {
   "name": "@hooliy/9codex",
-  "version": "2.0.25",
+  "version": "2.0.26",
   "description": "Headless Fast gateway and background daemon for Codex",
   "author": "hooliy1",
   "license": "MIT",
