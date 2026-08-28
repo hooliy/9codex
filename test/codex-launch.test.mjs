@@ -44,6 +44,7 @@ test("builds app-server overrides from the 9codex gateway catalog", () => {
     "-c", 'model_reasoning_effort="high"',
     "-c", 'model_verbosity="high"',
     "-c", 'model_reasoning_summary="detailed"',
+    "-c", 'model_auto_compact_token_limit_scope="body_after_prefix"',
     "-c", "features.fast_mode=true",
     "-c", "features.multi_agent=true",
     "-c", 'multi_agent_mode="proactive"',

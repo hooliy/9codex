@@ -54,9 +54,10 @@ explicit opt-in for install/restart.
 
 The Desktop launch environment points to the 9codex-owned wrapper. It supplies
 the 9codex provider, live model catalog, MCP, native multi-agent, Fast, high
-reasoning, high verbosity, and detailed reasoning summary. A running Desktop
-process is restarted once only when its app-server is not already using the
-9codex catalog.
+reasoning, high verbosity, detailed reasoning summary, and per-model automatic
+compaction at 90% of the declared context window. Fixed prompt prefixes do not
+count toward that threshold. A running Desktop process is restarted once only
+when its app-server is not already using the 9codex catalog.
 
 ## Default execution policy
 

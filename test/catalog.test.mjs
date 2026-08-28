@@ -79,6 +79,7 @@ test("catalog uses the full upstream window for Codex-required truncation metada
     limit: 64_000,
   });
   assert.equal(result.models[0].effective_context_window_percent, 100);
+  assert.equal(result.models[0].auto_compact_token_limit, 57_600);
 });
 
 test("catalog preserves the full upstream 1.05M context window", () => {
@@ -90,6 +91,7 @@ test("catalog preserves the full upstream 1.05M context window", () => {
   assert.equal(model.context_window, 1_050_000);
   assert.equal(model.max_context_window, 1_050_000);
   assert.equal(model.effective_context_window_percent, 100);
+  assert.equal(model.auto_compact_token_limit, 945_000);
   assert.deepEqual(model.truncation_policy, { mode: "tokens", limit: 1_050_000 });
   assert.equal(model.context_window * model.effective_context_window_percent / 100, 1_050_000);
 });
@@ -102,6 +104,7 @@ test("catalog preserves the full upstream 372k context window", () => {
 
   assert.equal(model.context_window, 372_000);
   assert.equal(model.effective_context_window_percent, 100);
+  assert.equal(model.auto_compact_token_limit, 334_800);
   assert.equal(model.context_window * model.effective_context_window_percent / 100, 372_000);
 });
 
