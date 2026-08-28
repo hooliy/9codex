@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   applyCompatibilityProfile,
   normalizeResponsesRequest,
+  sanitizeResponsesOutput,
 } from "../lib/protocol.mjs";
 
 test("removes invalid historical message IDs before forwarding Responses input", () => {
@@ -210,4 +211,75 @@ test("applies only explicit Responses compatibility field rules", () => {
   assert.equal("service_tier" in result, false);
   assert.deepEqual(result.reasoning_config, { effort: "high" });
   assert.deepEqual(result.future_field, { nested: [1, 2, 3] });
+});
+
+test("removes model-controlled budgets from create_goal definitions and history", () => {
+  const result = normalizeResponsesRequest({
+    input: [{
+      type: "function_call",
+      name: "create_goal",
+      call_id: "call_goal",
+      arguments: "{\"objective\":\"完成任务\",\"token_budget\":100000}",
+    }, {
+      type: "function_call_output",
+      call_id: "call_goal",
+      output: "created",
+    }],
+    tools: [{
+      type: "function",
+      name: "create_goal",
+      description: "Create a goal.",
+      parameters: {
+        type: "object",
+        properties: {
+          objective: { type: "string" },
+          token_budget: { type: "integer" },
+        },
+        required: ["objective", "token_budget"],
+      },
+    }, {
+      type: "function",
+      name: "other_tool",
+      parameters: {
+        type: "object",
+        properties: { token_budget: { type: "integer" } },
+      },
+    }],
+  });
+
+  assert.equal(
+    result.input[0].arguments,
+    "{\"objective\":\"完成任务\"}",
+  );
+  assert.equal("token_budget" in result.tools[0].parameters.properties, false);
+  assert.deepEqual(result.tools[0].parameters.required, ["objective"]);
+  assert.match(result.tools[0].description, /Never include token_budget/);
+  assert.deepEqual(
+    result.tools[1].parameters.properties,
+    { token_budget: { type: "integer" } },
+  );
+});
+
+test("removes token_budget only from valid create_goal output arguments", () => {
+  const payload = {
+    output: [{
+      type: "function_call",
+      name: "create_goal",
+      arguments: "{\"objective\":\"完成任务\",\"token_budget\":100000}",
+    }, {
+      type: "function_call",
+      name: "other_tool",
+      arguments: "{\"token_budget\":100000}",
+    }, {
+      type: "function_call",
+      name: "create_goal",
+      arguments: "{\"objective\":",
+    }],
+  };
+
+  sanitizeResponsesOutput(payload);
+
+  assert.equal(payload.output[0].arguments, "{\"objective\":\"完成任务\"}");
+  assert.equal(payload.output[1].arguments, "{\"token_budget\":100000}");
+  assert.equal(payload.output[2].arguments, "{\"objective\":");
 });

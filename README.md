@@ -75,7 +75,7 @@ that ignores `priority` compute faster.
 
 9codex does not impose:
 
-- token budgets
+- model-controlled goal budgets; `create_goal.token_budget` is removed from tool schemas, requests, and responses
 - context-window fallbacks
 - output-token caps
 - request-body size caps

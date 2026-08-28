@@ -414,6 +414,127 @@ test("native Responses bridges the 9codex MCP namespace for flat-tool upstreams"
   assert.doesNotMatch(output, /"name":"mcp__9codex__image_gen"/);
 });
 
+test("gateway removes create_goal token budgets from requests and non-stream responses", async (t) => {
+  let capturedBody;
+  const upstream = http.createServer(async (req, res) => {
+    const chunks = [];
+    for await (const chunk of req) chunks.push(chunk);
+    capturedBody = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify({
+      id: "resp_goal",
+      output: [{
+        type: "function_call",
+        name: "create_goal",
+        arguments: "{\"objective\":\"继续\",\"token_budget\":100000}",
+      }],
+    }));
+  });
+  const upstreamUrl = await listen(upstream);
+  t.after(() => new Promise((resolve) => upstream.close(resolve)));
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "9codex-gateway-test-"));
+  const paths = resolvePaths(home);
+  const config = gatewayConfig(upstreamUrl);
+  await routingFixture(paths, config);
+  const gateway = createGateway(config, paths);
+  const gatewayUrl = await listen(gateway);
+  t.after(() => new Promise((resolve) => gateway.close(resolve)));
+
+  const response = await fetch(`${gatewayUrl}/v1/responses`, {
+    method: "POST",
+    headers: {
+      authorization: "Bearer 9codex_local_test",
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      model: "raw/model",
+      stream: false,
+      input: [{
+        type: "function_call",
+        name: "create_goal",
+        call_id: "call_goal",
+        arguments: "{\"objective\":\"继续\",\"token_budget\":100000}",
+      }, {
+        type: "function_call_output",
+        call_id: "call_goal",
+        output: "created",
+      }],
+      tools: [{
+        type: "function",
+        name: "create_goal",
+        description: "Create a goal.",
+        parameters: {
+          type: "object",
+          properties: {
+            objective: { type: "string" },
+            token_budget: { type: "integer" },
+          },
+          required: ["objective", "token_budget"],
+        },
+      }],
+    }),
+  });
+
+  assert.equal(response.status, 200);
+  assert.equal(capturedBody.input[0].arguments, "{\"objective\":\"继续\"}");
+  assert.equal("token_budget" in capturedBody.tools[0].parameters.properties, false);
+  assert.deepEqual((await response.json()).output[0], {
+    type: "function_call",
+    name: "create_goal",
+    arguments: "{\"objective\":\"继续\"}",
+  });
+});
+
+test("gateway removes create_goal token budgets from streamed SSE chunks", async (t) => {
+  const upstream = http.createServer(async (req, res) => {
+    for await (const _chunk of req) {}
+    res.writeHead(200, { "content-type": "text/event-stream" });
+    res.write("event: response.output_item.added\n");
+    res.write("data: {\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"id\":\"fc_goal\",\"type\":\"function_call\",\"name\":\"create_goal\",\"arguments\":\"\"}}\n\n");
+    res.write("event: response.function_call_arguments.delta\n");
+    res.write("data: {\"type\":\"response.function_call_arguments.delta\",\"item_id\":\"fc_goal\",\"output_index\":0,\"delta\":\"{\\\"objective\\\":\\\"继续\\\",\\\"token_budget\\\":\"}\n\n");
+    await new Promise((resolve) => setImmediate(resolve));
+    res.end([
+      "event: response.function_call_arguments.delta",
+      "data: {\"type\":\"response.function_call_arguments.delta\",\"item_id\":\"fc_goal\",\"output_index\":0,\"delta\":\"100000}\"}",
+      "",
+      "event: response.function_call_arguments.done",
+      "data: {\"type\":\"response.function_call_arguments.done\",\"item_id\":\"fc_goal\",\"output_index\":0,\"arguments\":\"{\\\"objective\\\":\\\"继续\\\",\\\"token_budget\\\":100000}\"}",
+      "",
+      "event: response.output_item.done",
+      "data: {\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":{\"id\":\"fc_goal\",\"type\":\"function_call\",\"name\":\"create_goal\",\"arguments\":\"{\\\"objective\\\":\\\"继续\\\",\\\"token_budget\\\":100000}\"}}",
+      "",
+      "event: response.completed",
+      "data: [DONE]",
+      "",
+      "",
+    ].join("\n"));
+  });
+  const upstreamUrl = await listen(upstream);
+  t.after(() => new Promise((resolve) => upstream.close(resolve)));
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "9codex-gateway-test-"));
+  const paths = resolvePaths(home);
+  const config = gatewayConfig(upstreamUrl);
+  await routingFixture(paths, config);
+  const gateway = createGateway(config, paths);
+  const gatewayUrl = await listen(gateway);
+  t.after(() => new Promise((resolve) => gateway.close(resolve)));
+
+  const response = await fetch(`${gatewayUrl}/v1/responses`, {
+    method: "POST",
+    headers: {
+      authorization: "Bearer 9codex_local_test",
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({ model: "raw/model", input: "continue", stream: true }),
+  });
+
+  const output = await response.text();
+  assert.equal(response.status, 200);
+  assert.match(output, /"arguments":"\{\\"objective\\":\\"继续\\"\}"/);
+  assert.doesNotMatch(output, /token_budget/);
+});
+
 test("gateway forwards Responses request bodies larger than 64 MiB", async (t) => {
   let capturedLength;
   const upstream = http.createServer(async (req, res) => {
