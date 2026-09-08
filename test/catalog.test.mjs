@@ -46,7 +46,7 @@ test("catalog advertises only verified capabilities and enabled models", () => {
 
   assert.equal(result.models.length, 1);
   assert.equal(result.models[0].slug, "vendor/model-a");
-  assert.equal(result.models[0].display_name, "Model A");
+  assert.equal(result.models[0].display_name, "\u2007\u2007Model A");
   assert.equal(result.models[0].supports_parallel_tool_calls, false);
   assert.equal(result.models[0].supports_image_detail_original, false);
   assert.deepEqual(result.models[0].service_tiers, []);
@@ -185,7 +185,7 @@ test("catalog does not duplicate a GPT model to expose Fast mode", () => {
 
   assert.equal(result.models.length, 1);
   assert.equal(result.models[0].slug, "cx/gpt-5.6-sol");
-  assert.equal(result.models[0].display_name, "GPT 5.6 Sol");
+  assert.equal(result.models[0].display_name, "\u2007\u2007GPT 5.6 Sol");
   assert.equal(result.map["cx/gpt-5.6-sol"], "cx/gpt-5.6-sol");
   assert.deepEqual(result.forcedServiceTiers, {});
 });
